@@ -126,6 +126,12 @@ class MarketScanner:
     def get_stats(self) -> dict:
         return self.trade_tracker.get_stats()
 
+    def get_pair_stats(self) -> list[dict]:
+        return self.trade_tracker.get_pair_stats()
+
+    def get_best_pairs(self, min_closed: int = 1, limit: int = 5) -> list[dict]:
+        return self.trade_tracker.get_best_pairs(min_closed=min_closed, limit=limit)
+
     async def check_open_signals(self):
         open_signals = self.trade_tracker.get_open_signals()
 

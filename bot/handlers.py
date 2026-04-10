@@ -20,7 +20,9 @@ async def start_handler(message: Message):
         "/mode - показать текущие настройки\n"
         "/lastsignals - показать последние сигналы\n"
         "/open_signals - показать открытые сигналы\n"
-        "/stats - показать статистику"
+        "/stats - показать статистику\n"
+        "/stats_detailed - статистика по парам\n"
+        "/best_pairs - лучшие пары"
     )
 
 
@@ -123,6 +125,55 @@ async def stats_handler(message: Message):
         f"STOP: {stats['stop_hit']}\n"
         f"Winrate: {stats['winrate']}%"
     )
+
+
+@router.message(Command("stats_detailed"))
+async def stats_detailed_handler(message: Message):
+    scanner = message.dispatcher.get("scanner")
+
+    if scanner is None:
+        await message.answer("Сканер пока недоступен.")
+        return
+
+    rows = scanner.get_pair_stats()
+
+    if not rows:
+        await message.answer("Детальная статистика пока пуста.")
+        return
+
+    lines = ["📈 Статистика по парам:\n"]
+    for row in rows[:10]:
+        lines.append(
+            f"{row['symbol']} | total={row['total']} | "
+            f"closed={row['closed']} | stop={row['stop_hit']} | "
+            f"winrate={row['winrate']}%"
+        )
+
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("best_pairs"))
+async def best_pairs_handler(message: Message):
+    scanner = message.dispatcher.get("scanner")
+
+    if scanner is None:
+        await message.answer("Сканер пока недоступен.")
+        return
+
+    rows = scanner.get_best_pairs(min_closed=1, limit=5)
+
+    if not rows:
+        await message.answer("Пока нет лучших пар — ещё мало закрытых сигналов.")
+        return
+
+    lines = ["🏆 Лучшие пары:\n"]
+    for row in rows:
+        lines.append(
+            f"{row['symbol']} | winrate={row['winrate']}% | "
+            f"closed={row['closed']} | stop={row['stop_hit']}"
+        )
+
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("scan"))

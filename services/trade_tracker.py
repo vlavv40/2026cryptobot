@@ -1,15 +1,86 @@
+import csv
 import json
 from datetime import datetime
 from pathlib import Path
 
+from services.stats_analyzer import StatsAnalyzer
+
 
 class TradeTracker:
-    def __init__(self, filepath: str = "tracked_signals.json"):
+    def __init__(self, filepath: str = "tracked_signals.json", csv_filepath: str = "tracked_signals.csv"):
         self.path = Path(filepath)
+        self.csv_path = Path(csv_filepath)
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not self.path.exists():
             self._save([])
+
+        if not self.csv_path.exists():
+            self._init_csv()
+
+    def _init_csv(self):
+        with self.csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "id",
+                    "symbol",
+                    "direction",
+                    "entry_min",
+                    "entry_max",
+                    "stop_loss",
+                    "tp1",
+                    "tp2",
+                    "tp3",
+                    "score",
+                    "status",
+                    "created_at",
+                    "closed_at",
+                ],
+            )
+            writer.writeheader()
+
+    def _rewrite_csv(self, data: list[dict]):
+        with self.csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "id",
+                    "symbol",
+                    "direction",
+                    "entry_min",
+                    "entry_max",
+                    "stop_loss",
+                    "tp1",
+                    "tp2",
+                    "tp3",
+                    "score",
+                    "status",
+                    "created_at",
+                    "closed_at",
+                ],
+            )
+            writer.writeheader()
+            for row in data:
+                writer.writerow(
+                    {
+                        "id": row.get("id"),
+                        "symbol": row.get("symbol"),
+                        "direction": row.get("direction"),
+                        "entry_min": row.get("entry_min"),
+                        "entry_max": row.get("entry_max"),
+                        "stop_loss": row.get("stop_loss"),
+                        "tp1": row.get("tp1"),
+                        "tp2": row.get("tp2"),
+                        "tp3": row.get("tp3"),
+                        "score": row.get("score"),
+                        "status": row.get("status"),
+                        "created_at": row.get("created_at"),
+                        "closed_at": row.get("closed_at"),
+                    }
+                )
 
     def _load(self) -> list[dict]:
         try:
@@ -26,13 +97,15 @@ class TradeTracker:
         with self.path.open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+        self._rewrite_csv(data)
+
     def add_signal(self, payload: dict):
         data = self._load()
         payload["created_at"] = datetime.utcnow().isoformat()
         payload["status"] = "OPEN"
         payload["closed_at"] = None
         data.append(payload)
-        data = data[-300:]
+        data = data[-500:]
         self._save(data)
 
     def get_open_signals(self) -> list[dict]:
@@ -57,27 +130,13 @@ class TradeTracker:
             self._save(data)
 
     def get_stats(self) -> dict:
-        data = self._load()
+        analyzer = StatsAnalyzer(self.get_all_signals())
+        return analyzer.overall_stats()
 
-        total = len(data)
-        open_count = sum(1 for x in data if x.get("status") == "OPEN")
-        stop_hit = sum(1 for x in data if x.get("status") == "STOP_HIT")
-        tp1_hit = sum(1 for x in data if x.get("status") == "TP1_HIT")
-        tp2_hit = sum(1 for x in data if x.get("status") == "TP2_HIT")
-        tp3_hit = sum(1 for x in data if x.get("status") == "TP3_HIT")
+    def get_pair_stats(self) -> list[dict]:
+        analyzer = StatsAnalyzer(self.get_all_signals())
+        return analyzer.pair_stats()
 
-        closed = total - open_count
-        wins = tp1_hit + tp2_hit + tp3_hit
-
-        winrate = round((wins / closed) * 100, 2) if closed > 0 else 0.0
-
-        return {
-            "total": total,
-            "open": open_count,
-            "closed": closed,
-            "tp1_hit": tp1_hit,
-            "tp2_hit": tp2_hit,
-            "tp3_hit": tp3_hit,
-            "stop_hit": stop_hit,
-            "winrate": winrate,
-        }
+    def get_best_pairs(self, min_closed: int = 1, limit: int = 5) -> list[dict]:
+        analyzer = StatsAnalyzer(self.get_all_signals())
+        return analyzer.best_pairs(min_closed=min_closed, limit=limit)
