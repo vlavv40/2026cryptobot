@@ -315,15 +315,18 @@ class MarketScanner:
 
                     result = self.engine.analyze_symbol(symbol, htf_df, mtf_df, ltf_df)
 
-                    # Мягкая коррекция score по headline bias
                     if result.signal:
                         if news_decision.sentiment_bias == "BEARISH" and result.signal.direction == "LONG":
                             result.signal.score = round(result.signal.score - 0.7, 1)
-                            result.signal.reasons.append("news guard: bearish headlines reduce LONG confidence")
+                            result.signal.reasons.append(
+                                "news guard: bearish headlines reduce LONG confidence"
+                            )
 
                         if news_decision.sentiment_bias == "BULLISH" and result.signal.direction == "SHORT":
                             result.signal.score = round(result.signal.score - 0.7, 1)
-                            result.signal.reasons.append("news guard: bullish headlines reduce SHORT confidence")
+                            result.signal.reasons.append(
+                                "news guard: bullish headlines reduce SHORT confidence"
+                            )
 
                         if result.signal.score < Config.MIN_SCORE:
                             result = SignalCheckResult(
@@ -344,4 +347,41 @@ class MarketScanner:
                     else:
                         logger.info(
                             f"[SKIP] {symbol} | Причина: {result.skip_reason}"
-                            f"{self._format_diag(result
+                            f"{self._format_diag(result.diagnostics)}"
+                        )
+
+                except Exception as error:
+                    logger.exception(f"[SCAN ERROR] {symbol} | {error}")
+
+            if send_to_telegram:
+                for result in results:
+                    if not result.signal:
+                        continue
+
+                    signal = result.signal
+
+                    try:
+                        if self._is_on_cooldown(signal.symbol, signal.direction):
+                            logger.info(f"[COOLDOWN] {signal.symbol} {signal.direction}")
+                            continue
+
+                        if self._same_setup(signal):
+                            logger.info(f"[DUPLICATE] {signal.symbol} {signal.direction}")
+                            continue
+
+                        await send_signal(bot, signal)
+                        self._set_cooldown(signal.symbol, signal.direction)
+                        self._remember_signal(signal)
+                        self._log_signal_to_history(signal)
+                        self._track_new_signal(signal)
+
+                        logger.info(
+                            f"[SENT] {signal.symbol} {signal.direction} | score={signal.score}"
+                        )
+
+                    except Exception as error:
+                        logger.exception(
+                            f"[SEND ERROR] {signal.symbol} {signal.direction} | {error}"
+                        )
+
+            return results
