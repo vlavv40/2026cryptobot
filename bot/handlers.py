@@ -15,6 +15,7 @@ async def start_handler(message: Message):
         "Команды:\n"
         "/start - запуск\n"
         "/status - статус\n"
+        "/heartbeat - жив ли бот\n"
         "/scan - ручной запуск анализа\n"
         "/chatid - показать ID текущего чата\n"
         "/mode - показать текущие настройки\n"
@@ -35,6 +36,30 @@ async def start_handler(message: Message):
 @router.message(Command("status"))
 async def status_handler(message: Message):
     await message.answer("Бот работает. Аналитический движок активен.")
+
+
+@router.message(Command("heartbeat"))
+async def heartbeat_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
+    hb = scanner.get_heartbeat()
+    cycle = hb["last_cycle"]
+
+    top_symbols = ", ".join(cycle.get("top_signal_symbols", [])) if cycle.get("top_signal_symbols") else "нет"
+
+    await message.answer(
+        "💓 Heartbeat\n\n"
+        f"Режим: {hb['mode']}\n"
+        f"Интервал сканирования: {hb['scan_interval']} сек\n"
+        f"Открытых сигналов: {hb['open_signals']}\n"
+        f"Последний цикл старт: {cycle.get('started_at')}\n"
+        f"Последний цикл финиш: {cycle.get('finished_at')}\n"
+        f"News block: {cycle.get('news_block')}\n"
+        f"Причина news guard: {cycle.get('news_reason')}\n"
+        f"Sentiment: {cycle.get('sentiment')}\n"
+        f"Проверено пар: {cycle.get('symbols_checked')}\n"
+        f"Сильных сигналов: {cycle.get('signals_found')}\n"
+        f"Последние top symbols: {top_symbols}"
+    )
 
 
 @router.message(Command("chatid"))

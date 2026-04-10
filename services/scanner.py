@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 from datetime import datetime
 from typing import List
 from uuid import uuid4
@@ -27,6 +28,18 @@ class MarketScanner:
         self.signal_log = SignalLogStore()
         self.trade_tracker = TradeTracker()
         self._scan_lock = asyncio.Lock()
+
+        self.last_cycle_info = {
+            "started_at": None,
+            "finished_at": None,
+            "symbols_checked": 0,
+            "signals_found": 0,
+            "news_block": False,
+            "news_reason": "unknown",
+            "sentiment": "NEUTRAL",
+            "skip_summary": {},
+            "top_signal_symbols": [],
+        }
 
     def _make_cooldown_key(self, symbol: str, direction: str) -> str:
         return f"{symbol}:{direction}"
@@ -148,6 +161,14 @@ class MarketScanner:
 
     def get_json_path(self) -> str:
         return self.trade_tracker.get_json_path()
+
+    def get_heartbeat(self) -> dict:
+        return {
+            "mode": Config.STRATEGY_MODE,
+            "scan_interval": Config.SCAN_INTERVAL_SECONDS,
+            "open_signals": len(self.get_open_signals()),
+            "last_cycle": self.last_cycle_info,
+        }
 
     async def get_news_guard_status(self) -> dict:
         decision = await self.news_guard.evaluate_market()
@@ -286,9 +307,45 @@ class MarketScanner:
         logger.info("Использую резервный список пар из config.py")
         return Config.DEFAULT_SYMBOLS
 
+    async def _send_cycle_start(self, bot: Bot, symbols_count: int, news_block: bool, news_reason: str, sentiment: str):
+        try:
+            text = (
+                "🔄 Новый цикл анализа\n\n"
+                f"Режим: {Config.STRATEGY_MODE}\n"
+                f"Пары в анализе: {symbols_count}\n"
+                f"News block: {'да' if news_block else 'нет'}\n"
+                f"Причина news guard: {news_reason}\n"
+                f"Sentiment: {sentiment}\n"
+                f"Открытых сигналов: {len(self.get_open_signals())}"
+            )
+            await bot.send_message(chat_id=Config.CHAT_ID, text=text)
+        except Exception as error:
+            logger.exception(f"Не удалось отправить старт цикла: {error}")
+
+    async def _send_cycle_finish(self, bot: Bot, checked: int, signals_found: int, skip_summary: dict):
+        try:
+            if skip_summary:
+                top_reasons = sorted(skip_summary.items(), key=lambda x: x[1], reverse=True)[:5]
+                reasons_text = "\n".join([f"- {reason}: {count}" for reason, count in top_reasons])
+            else:
+                reasons_text = "- нет skip-причин"
+
+            text = (
+                "✅ Цикл завершён\n\n"
+                f"Проверено пар: {checked}\n"
+                f"Найдено сильных сигналов: {signals_found}\n"
+                f"Открытых сигналов сейчас: {len(self.get_open_signals())}\n\n"
+                f"Главные причины skip:\n{reasons_text}"
+            )
+            await bot.send_message(chat_id=Config.CHAT_ID, text=text)
+        except Exception as error:
+            logger.exception(f"Не удалось отправить завершение цикла: {error}")
+
     async def scan_market(self, bot: Bot, send_to_telegram: bool = True) -> List[SignalCheckResult]:
         async with self._scan_lock:
             await self.check_open_signals(bot)
+
+            cycle_started_at = datetime.utcnow().isoformat()
 
             news_decision = await self.news_guard.evaluate_market()
             logger.info(
@@ -299,11 +356,43 @@ class MarketScanner:
             )
 
             if news_decision.blocked:
+                self.last_cycle_info = {
+                    "started_at": cycle_started_at,
+                    "finished_at": datetime.utcnow().isoformat(),
+                    "symbols_checked": 0,
+                    "signals_found": 0,
+                    "news_block": True,
+                    "news_reason": news_decision.reason,
+                    "sentiment": news_decision.sentiment_bias,
+                    "skip_summary": {"news block": 1},
+                    "top_signal_symbols": [],
+                }
+
+                if send_to_telegram:
+                    await self._send_cycle_start(
+                        bot=bot,
+                        symbols_count=0,
+                        news_block=True,
+                        news_reason=news_decision.reason,
+                        sentiment=news_decision.sentiment_bias,
+                    )
+
                 logger.info(f"[NEWS BLOCK] {news_decision.reason}")
                 return []
 
             symbols = await self._load_symbols_for_scan()
+
+            if send_to_telegram:
+                await self._send_cycle_start(
+                    bot=bot,
+                    symbols_count=len(symbols),
+                    news_block=False,
+                    news_reason=news_decision.reason,
+                    sentiment=news_decision.sentiment_bias,
+                )
+
             results: List[SignalCheckResult] = []
+            skip_counter = Counter()
 
             for symbol in symbols:
                 try:
@@ -318,15 +407,11 @@ class MarketScanner:
                     if result.signal:
                         if news_decision.sentiment_bias == "BEARISH" and result.signal.direction == "LONG":
                             result.signal.score = round(result.signal.score - 0.7, 1)
-                            result.signal.reasons.append(
-                                "news guard: bearish headlines reduce LONG confidence"
-                            )
+                            result.signal.reasons.append("news guard: bearish headlines reduce LONG confidence")
 
                         if news_decision.sentiment_bias == "BULLISH" and result.signal.direction == "SHORT":
                             result.signal.score = round(result.signal.score - 0.7, 1)
-                            result.signal.reasons.append(
-                                "news guard: bullish headlines reduce SHORT confidence"
-                            )
+                            result.signal.reasons.append("news guard: bullish headlines reduce SHORT confidence")
 
                         if result.signal.score < Config.MIN_SCORE:
                             result = SignalCheckResult(
@@ -345,43 +430,68 @@ class MarketScanner:
                             f"{self._format_diag(result.signal.diagnostics)}"
                         )
                     else:
+                        skip_counter[result.skip_reason] += 1
                         logger.info(
                             f"[SKIP] {symbol} | Причина: {result.skip_reason}"
                             f"{self._format_diag(result.diagnostics)}"
                         )
 
                 except Exception as error:
-                    logger.exception(f"[SCAN ERROR] {symbol} | {error}")
+                    logger.exception(f"[ERROR] Ошибка при анализе {symbol}: {error}")
+                    skip_counter["internal analysis error"] += 1
 
-            if send_to_telegram:
-                for result in results:
-                    if not result.signal:
-                        continue
+            good_signals = [r.signal for r in results if r.signal is not None]
+            good_signals.sort(key=lambda s: s.score, reverse=True)
 
-                    signal = result.signal
+            final_signals = []
+            for signal in good_signals:
+                if self._is_on_cooldown(signal.symbol, signal.direction):
+                    logger.info(f"[COOLDOWN] {signal.symbol} {signal.direction} | повторный сигнал пропущен")
+                    skip_counter["cooldown"] += 1
+                    continue
 
+                if self._same_setup(signal):
+                    logger.info(f"[DUPLICATE] {signal.symbol} {signal.direction} | тот же сетап, пропускаю")
+                    skip_counter["duplicate setup"] += 1
+                    continue
+
+                final_signals.append(signal)
+
+            top_signals = final_signals[: Config.MAX_SIGNALS_PER_SCAN]
+
+            if send_to_telegram and top_signals:
+                for signal in top_signals:
                     try:
-                        if self._is_on_cooldown(signal.symbol, signal.direction):
-                            logger.info(f"[COOLDOWN] {signal.symbol} {signal.direction}")
-                            continue
-
-                        if self._same_setup(signal):
-                            logger.info(f"[DUPLICATE] {signal.symbol} {signal.direction}")
-                            continue
-
-                        await send_signal(bot, signal)
+                        await send_signal(bot, Config.CHAT_ID, signal)
                         self._set_cooldown(signal.symbol, signal.direction)
                         self._remember_signal(signal)
                         self._log_signal_to_history(signal)
                         self._track_new_signal(signal)
-
-                        logger.info(
-                            f"[SENT] {signal.symbol} {signal.direction} | score={signal.score}"
-                        )
-
+                        logger.info(f"Сигнал отправлен: {signal.symbol}")
                     except Exception as error:
-                        logger.exception(
-                            f"[SEND ERROR] {signal.symbol} {signal.direction} | {error}"
-                        )
+                        logger.exception(f"Ошибка отправки сигнала {signal.symbol}: {error}")
+
+            self.last_cycle_info = {
+                "started_at": cycle_started_at,
+                "finished_at": datetime.utcnow().isoformat(),
+                "symbols_checked": len(symbols),
+                "signals_found": len(top_signals),
+                "news_block": False,
+                "news_reason": news_decision.reason,
+                "sentiment": news_decision.sentiment_bias,
+                "skip_summary": dict(skip_counter),
+                "top_signal_symbols": [s.symbol for s in top_signals],
+            }
+
+            if send_to_telegram:
+                await self._send_cycle_finish(
+                    bot=bot,
+                    checked=len(symbols),
+                    signals_found=len(top_signals),
+                    skip_summary=dict(skip_counter),
+                )
+
+            if not top_signals:
+                logger.info("Сильных новых сигналов не найдено.")
 
             return results
