@@ -7,6 +7,7 @@ from aiogram import Bot
 
 from config import Config
 from services.market_data import BinanceFuturesClient
+from services.news_guard import NewsGuard
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
@@ -21,6 +22,7 @@ class MarketScanner:
     def __init__(self):
         self.client = BinanceFuturesClient()
         self.engine = SignalEngine()
+        self.news_guard = NewsGuard()
         self.state = StateStore(Config.STATE_FILE)
         self.signal_log = SignalLogStore()
         self.trade_tracker = TradeTracker()
@@ -146,6 +148,17 @@ class MarketScanner:
 
     def get_json_path(self) -> str:
         return self.trade_tracker.get_json_path()
+
+    async def get_news_guard_status(self) -> dict:
+        decision = await self.news_guard.evaluate_market()
+        return {
+            "blocked": decision.blocked,
+            "reason": decision.reason,
+            "sentiment_bias": decision.sentiment_bias,
+            "negative_count": decision.negative_count,
+            "positive_count": decision.positive_count,
+            "macro_events_count": len(decision.macro_events),
+        }
 
     async def _send_closed_signal_notifications(self, bot: Bot):
         items = self.trade_tracker.get_unnotified_closed_signals()
@@ -277,7 +290,17 @@ class MarketScanner:
         async with self._scan_lock:
             await self.check_open_signals(bot)
 
-            logger.info(f"Старт сканирования рынка... режим={Config.STRATEGY_MODE}")
+            news_decision = await self.news_guard.evaluate_market()
+            logger.info(
+                f"Старт сканирования рынка... режим={Config.STRATEGY_MODE} | "
+                f"news_block={news_decision.blocked} | "
+                f"sentiment={news_decision.sentiment_bias} | "
+                f"news_reason={news_decision.reason}"
+            )
+
+            if news_decision.blocked:
+                logger.info(f"[NEWS BLOCK] {news_decision.reason}")
+                return []
 
             symbols = await self._load_symbols_for_scan()
             results: List[SignalCheckResult] = []
@@ -291,6 +314,25 @@ class MarketScanner:
                     ltf_df = await self.client.get_klines(symbol, Config.LTF_INTERVAL, Config.KLINES_LIMIT)
 
                     result = self.engine.analyze_symbol(symbol, htf_df, mtf_df, ltf_df)
+
+                    # Мягкая коррекция score по headline bias
+                    if result.signal:
+                        if news_decision.sentiment_bias == "BEARISH" and result.signal.direction == "LONG":
+                            result.signal.score = round(result.signal.score - 0.7, 1)
+                            result.signal.reasons.append("news guard: bearish headlines reduce LONG confidence")
+
+                        if news_decision.sentiment_bias == "BULLISH" and result.signal.direction == "SHORT":
+                            result.signal.score = round(result.signal.score - 0.7, 1)
+                            result.signal.reasons.append("news guard: bullish headlines reduce SHORT confidence")
+
+                        if result.signal.score < Config.MIN_SCORE:
+                            result = SignalCheckResult(
+                                symbol=result.symbol,
+                                signal=None,
+                                skip_reason="news guard lowered score below threshold",
+                                diagnostics=result.diagnostics,
+                            )
+
                     results.append(result)
 
                     if result.signal:
@@ -302,43 +344,4 @@ class MarketScanner:
                     else:
                         logger.info(
                             f"[SKIP] {symbol} | Причина: {result.skip_reason}"
-                            f"{self._format_diag(result.diagnostics)}"
-                        )
-
-                except Exception as error:
-                    logger.exception(f"[ERROR] Ошибка при анализе {symbol}: {error}")
-
-            good_signals = [r.signal for r in results if r.signal is not None]
-            good_signals.sort(key=lambda s: s.score, reverse=True)
-
-            final_signals = []
-            for signal in good_signals:
-                if self._is_on_cooldown(signal.symbol, signal.direction):
-                    logger.info(f"[COOLDOWN] {signal.symbol} {signal.direction} | повторный сигнал пропущен")
-                    continue
-
-                if self._same_setup(signal):
-                    logger.info(f"[DUPLICATE] {signal.symbol} {signal.direction} | тот же сетап, пропускаю")
-                    continue
-
-                final_signals.append(signal)
-
-            top_signals = final_signals[: Config.MAX_SIGNALS_PER_SCAN]
-
-            if not top_signals:
-                logger.info("Сильных новых сигналов не найдено.")
-                return results
-
-            if send_to_telegram:
-                for signal in top_signals:
-                    try:
-                        await send_signal(bot, Config.CHAT_ID, signal)
-                        self._set_cooldown(signal.symbol, signal.direction)
-                        self._remember_signal(signal)
-                        self._log_signal_to_history(signal)
-                        self._track_new_signal(signal)
-                        logger.info(f"Сигнал отправлен: {signal.symbol}")
-                    except Exception as error:
-                        logger.exception(f"Ошибка отправки сигнала {signal.symbol}: {error}")
-
-            return results
+                            f"{self._format_diag(result

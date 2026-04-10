@@ -10,24 +10,17 @@ class Config:
 
     BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
 
-    # Режим стратегии:
-    # SNIPER = очень строго, мало сигналов
-    # BALANCED_PRO = тоже строго, но живее
     STRATEGY_MODE = os.getenv("STRATEGY_MODE", "BALANCED_PRO")
 
-    # Таймфреймы
     HTF_INTERVAL = "4h"
     MTF_INTERVAL = "1h"
     LTF_INTERVAL = "15m"
 
-    # Сколько свечей загружать
     KLINES_LIMIT = 260
 
-    # Автосканирование
     SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
     MAX_SIGNALS_PER_SCAN = int(os.getenv("MAX_SIGNALS_PER_SCAN", "2"))
 
-    # Universe
     USE_PRIORITY_SYMBOLS_ONLY = os.getenv("USE_PRIORITY_SYMBOLS_ONLY", "true").lower() == "true"
     MAX_SYMBOLS_TO_SCAN = int(os.getenv("MAX_SYMBOLS_TO_SCAN", "15"))
 
@@ -51,7 +44,6 @@ class Config:
 
     DEFAULT_SYMBOLS = PRIORITY_SYMBOLS.copy()
 
-    # Индикаторы
     EMA_ENTRY_FAST = 20
     EMA_ENTRY_SLOW = 50
     EMA_FAST = 50
@@ -60,22 +52,32 @@ class Config:
     ATR_PERIOD = 14
     ADX_PERIOD = 14
 
-    # Фильтр ликвидности по 24ч
     MIN_24H_QUOTE_VOLUME = 100_000_000
     MIN_24H_TRADES = 100_000
 
-    # Антидубли
     SIGNAL_COOLDOWN_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "180"))
 
-    # Railway Volume path:
-    # локально можно не задавать, тогда файл будет в корне проекта.
     STATE_DIR = os.getenv("STATE_DIR", "").strip()
     STATE_FILE = os.path.join(STATE_DIR, "bot_state.json") if STATE_DIR else "bot_state.json"
 
-    # Насколько entry/SL/TP могут отличаться, чтобы считать сетап тем же самым
-    SETUP_PRICE_TOLERANCE = 0.0035  # 0.35%
+    SETUP_PRICE_TOLERANCE = 0.0035
 
-    # Настройки по режимам
+    # News Guard
+    NEWS_GUARD_ENABLED = os.getenv("NEWS_GUARD_ENABLED", "true").lower() == "true"
+    NEWS_SENTIMENT_ENABLED = os.getenv("NEWS_SENTIMENT_ENABLED", "true").lower() == "true"
+
+    FMP_API_KEY = os.getenv("FMP_API_KEY", "")
+    NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
+
+    NEWS_LOOKAHEAD_MINUTES = int(os.getenv("NEWS_LOOKAHEAD_MINUTES", "60"))
+    NEWS_COOLDOWN_AFTER_MINUTES = int(os.getenv("NEWS_COOLDOWN_AFTER_MINUTES", "30"))
+
+    # Только события высокой важности будут блокировать сигналы
+    BLOCK_HIGH_IMPACT_NEWS_ONLY = os.getenv("BLOCK_HIGH_IMPACT_NEWS_ONLY", "true").lower() == "true"
+
+    # Если headlines очень негативные/позитивные — блокируем противоположные сигналы
+    NEWS_SENTIMENT_BLOCK_THRESHOLD = int(os.getenv("NEWS_SENTIMENT_BLOCK_THRESHOLD", "2"))
+
     if STRATEGY_MODE == "SNIPER":
         MIN_SCORE = 7.8
         MIN_RR = 2.0
