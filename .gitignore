@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+env/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets
+.env
+
+# Runtime state
+bot_state.json
+data/
+logs/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
