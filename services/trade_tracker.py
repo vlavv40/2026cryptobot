@@ -38,6 +38,7 @@ class TradeTracker:
                     "status",
                     "created_at",
                     "closed_at",
+                    "notified",
                 ],
             )
             writer.writeheader()
@@ -60,6 +61,7 @@ class TradeTracker:
                     "status",
                     "created_at",
                     "closed_at",
+                    "notified",
                 ],
             )
             writer.writeheader()
@@ -79,6 +81,7 @@ class TradeTracker:
                         "status": row.get("status"),
                         "created_at": row.get("created_at"),
                         "closed_at": row.get("closed_at"),
+                        "notified": row.get("notified", False),
                     }
                 )
 
@@ -104,6 +107,7 @@ class TradeTracker:
         payload["created_at"] = datetime.utcnow().isoformat()
         payload["status"] = "OPEN"
         payload["closed_at"] = None
+        payload["notified"] = False
         data.append(payload)
         data = data[-500:]
         self._save(data)
@@ -118,16 +122,41 @@ class TradeTracker:
     def update_signal(self, target_id: str, new_status: str):
         data = self._load()
         changed = False
+        updated_item = None
 
         for item in data:
             if item.get("id") == target_id and item.get("status") == "OPEN":
                 item["status"] = new_status
                 item["closed_at"] = datetime.utcnow().isoformat()
+                item["notified"] = False
+                updated_item = item.copy()
                 changed = True
                 break
 
         if changed:
             self._save(data)
+
+        return updated_item
+
+    def mark_notified(self, target_id: str):
+        data = self._load()
+        changed = False
+
+        for item in data:
+            if item.get("id") == target_id:
+                item["notified"] = True
+                changed = True
+                break
+
+        if changed:
+            self._save(data)
+
+    def get_unnotified_closed_signals(self) -> list[dict]:
+        data = self._load()
+        return [
+            x for x in data
+            if x.get("status") != "OPEN" and not x.get("notified", False)
+        ]
 
     def get_stats(self) -> dict:
         analyzer = StatsAnalyzer(self.get_all_signals())

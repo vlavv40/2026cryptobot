@@ -132,57 +132,94 @@ class MarketScanner:
     def get_best_pairs(self, min_closed: int = 1, limit: int = 5) -> list[dict]:
         return self.trade_tracker.get_best_pairs(min_closed=min_closed, limit=limit)
 
-    async def check_open_signals(self):
-        open_signals = self.trade_tracker.get_open_signals()
+    async def _send_closed_signal_notifications(self, bot: Bot):
+        items = self.trade_tracker.get_unnotified_closed_signals()
 
-        if not open_signals:
-            return
-
-        for item in open_signals:
+        for item in items:
             try:
+                status = item["status"]
                 symbol = item["symbol"]
                 direction = item["direction"]
 
-                ltf_df = await self.client.get_klines(symbol, Config.LTF_INTERVAL, 5)
-                if len(ltf_df) < 2:
-                    continue
+                emoji_map = {
+                    "TP1_HIT": "✅",
+                    "TP2_HIT": "✅",
+                    "TP3_HIT": "✅",
+                    "STOP_HIT": "❌",
+                }
 
-                last_closed = ltf_df.iloc[-2]
-                high = float(last_closed["high"])
-                low = float(last_closed["low"])
+                emoji = emoji_map.get(status, "ℹ️")
 
-                stop_loss = float(item["stop_loss"])
-                tp1 = float(item["tp1"])
-                tp2 = float(item["tp2"])
-                tp3 = float(item["tp3"])
+                text = (
+                    f"{emoji} Результат сигнала\n\n"
+                    f"Монета: {symbol}\n"
+                    f"Направление: {direction}\n"
+                    f"Статус: {status}\n"
+                    f"Вход: {item['entry_min']} - {item['entry_max']}\n"
+                    f"Stop Loss: {item['stop_loss']}\n"
+                    f"TP1: {item['tp1']}\n"
+                    f"TP2: {item['tp2']}\n"
+                    f"TP3: {item['tp3']}"
+                )
 
-                new_status = None
-
-                if direction == "LONG":
-                    if low <= stop_loss:
-                        new_status = "STOP_HIT"
-                    elif high >= tp3:
-                        new_status = "TP3_HIT"
-                    elif high >= tp2:
-                        new_status = "TP2_HIT"
-                    elif high >= tp1:
-                        new_status = "TP1_HIT"
-                else:
-                    if high >= stop_loss:
-                        new_status = "STOP_HIT"
-                    elif low <= tp3:
-                        new_status = "TP3_HIT"
-                    elif low <= tp2:
-                        new_status = "TP2_HIT"
-                    elif low <= tp1:
-                        new_status = "TP1_HIT"
-
-                if new_status:
-                    self.trade_tracker.update_signal(item["id"], new_status)
-                    logger.info(f"[TRACKER] {symbol} {direction} -> {new_status}")
+                await bot.send_message(chat_id=Config.CHAT_ID, text=text)
+                self.trade_tracker.mark_notified(item["id"])
+                logger.info(f"[NOTIFY] Отправлен результат сигнала {symbol} -> {status}")
 
             except Exception as error:
-                logger.exception(f"[TRACKER ERROR] {item.get('symbol')} | {error}")
+                logger.exception(f"[NOTIFY ERROR] {item.get('symbol')} | {error}")
+
+    async def check_open_signals(self, bot: Bot):
+        open_signals = self.trade_tracker.get_open_signals()
+
+        if open_signals:
+            for item in open_signals:
+                try:
+                    symbol = item["symbol"]
+                    direction = item["direction"]
+
+                    ltf_df = await self.client.get_klines(symbol, Config.LTF_INTERVAL, 5)
+                    if len(ltf_df) < 2:
+                        continue
+
+                    last_closed = ltf_df.iloc[-2]
+                    high = float(last_closed["high"])
+                    low = float(last_closed["low"])
+
+                    stop_loss = float(item["stop_loss"])
+                    tp1 = float(item["tp1"])
+                    tp2 = float(item["tp2"])
+                    tp3 = float(item["tp3"])
+
+                    new_status = None
+
+                    if direction == "LONG":
+                        if low <= stop_loss:
+                            new_status = "STOP_HIT"
+                        elif high >= tp3:
+                            new_status = "TP3_HIT"
+                        elif high >= tp2:
+                            new_status = "TP2_HIT"
+                        elif high >= tp1:
+                            new_status = "TP1_HIT"
+                    else:
+                        if high >= stop_loss:
+                            new_status = "STOP_HIT"
+                        elif low <= tp3:
+                            new_status = "TP3_HIT"
+                        elif low <= tp2:
+                            new_status = "TP2_HIT"
+                        elif low <= tp1:
+                            new_status = "TP1_HIT"
+
+                    if new_status:
+                        updated = self.trade_tracker.update_signal(item["id"], new_status)
+                        logger.info(f"[TRACKER] {symbol} {direction} -> {new_status}")
+
+                except Exception as error:
+                    logger.exception(f"[TRACKER ERROR] {item.get('symbol')} | {error}")
+
+        await self._send_closed_signal_notifications(bot)
 
     def _format_diag(self, diagnostics: dict) -> str:
         if not diagnostics:
@@ -221,7 +258,7 @@ class MarketScanner:
 
     async def scan_market(self, bot: Bot, send_to_telegram: bool = True) -> List[SignalCheckResult]:
         async with self._scan_lock:
-            await self.check_open_signals()
+            await self.check_open_signals(bot)
 
             logger.info(f"Старт сканирования рынка... режим={Config.STRATEGY_MODE}")
 
