@@ -18,7 +18,9 @@ async def start_handler(message: Message):
         "/scan - ручной запуск анализа\n"
         "/chatid - показать ID текущего чата\n"
         "/mode - показать текущие настройки\n"
-        "/lastsignals - показать последние сигналы"
+        "/lastsignals - показать последние сигналы\n"
+        "/open_signals - показать открытые сигналы\n"
+        "/stats - показать статистику"
     )
 
 
@@ -73,6 +75,54 @@ async def lastsignals_handler(message: Message):
         )
 
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("open_signals"))
+async def open_signals_handler(message: Message):
+    scanner = message.dispatcher.get("scanner")
+
+    if scanner is None:
+        await message.answer("Сканер пока недоступен.")
+        return
+
+    signals = scanner.get_open_signals()
+
+    if not signals:
+        await message.answer("Сейчас нет открытых сигналов.")
+        return
+
+    lines = ["📂 Открытые сигналы:\n"]
+    for item in signals[:10]:
+        lines.append(
+            f"{item['symbol']} | {item['direction']} | "
+            f"entry={item['entry_min']} - {item['entry_max']} | "
+            f"SL={item['stop_loss']} | TP1={item['tp1']}"
+        )
+
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("stats"))
+async def stats_handler(message: Message):
+    scanner = message.dispatcher.get("scanner")
+
+    if scanner is None:
+        await message.answer("Сканер пока недоступен.")
+        return
+
+    stats = scanner.get_stats()
+
+    await message.answer(
+        "📊 Статистика сигналов\n\n"
+        f"Всего: {stats['total']}\n"
+        f"Открытых: {stats['open']}\n"
+        f"Закрытых: {stats['closed']}\n"
+        f"TP1: {stats['tp1_hit']}\n"
+        f"TP2: {stats['tp2_hit']}\n"
+        f"TP3: {stats['tp3_hit']}\n"
+        f"STOP: {stats['stop_hit']}\n"
+        f"Winrate: {stats['winrate']}%"
+    )
 
 
 @router.message(Command("scan"))

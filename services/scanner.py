@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime
 from typing import List
+from uuid import uuid4
 
 from aiogram import Bot
 
@@ -10,6 +11,7 @@ from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
 from services.telegram_sender import send_signal
+from services.trade_tracker import TradeTracker
 from utils.logger import setup_logger
 
 logger = setup_logger()
@@ -21,6 +23,7 @@ class MarketScanner:
         self.engine = SignalEngine()
         self.state = StateStore(Config.STATE_FILE)
         self.signal_log = SignalLogStore()
+        self.trade_tracker = TradeTracker()
         self._scan_lock = asyncio.Lock()
 
     def _make_cooldown_key(self, symbol: str, direction: str) -> str:
@@ -99,8 +102,81 @@ class MarketScanner:
         }
         self.signal_log.add_signal(payload)
 
+    def _track_new_signal(self, signal: Signal):
+        payload = {
+            "id": str(uuid4()),
+            "symbol": signal.symbol,
+            "direction": signal.direction,
+            "entry_min": signal.entry_min,
+            "entry_max": signal.entry_max,
+            "stop_loss": signal.stop_loss,
+            "tp1": signal.tp1,
+            "tp2": signal.tp2,
+            "tp3": signal.tp3,
+            "score": signal.score,
+        }
+        self.trade_tracker.add_signal(payload)
+
     def get_last_logged_signals(self, limit: int = 5) -> list[dict]:
         return self.signal_log.get_last_signals(limit=limit)
+
+    def get_open_signals(self) -> list[dict]:
+        return self.trade_tracker.get_open_signals()
+
+    def get_stats(self) -> dict:
+        return self.trade_tracker.get_stats()
+
+    async def check_open_signals(self):
+        open_signals = self.trade_tracker.get_open_signals()
+
+        if not open_signals:
+            return
+
+        for item in open_signals:
+            try:
+                symbol = item["symbol"]
+                direction = item["direction"]
+
+                ltf_df = await self.client.get_klines(symbol, Config.LTF_INTERVAL, 5)
+                if len(ltf_df) < 2:
+                    continue
+
+                last_closed = ltf_df.iloc[-2]
+                high = float(last_closed["high"])
+                low = float(last_closed["low"])
+
+                stop_loss = float(item["stop_loss"])
+                tp1 = float(item["tp1"])
+                tp2 = float(item["tp2"])
+                tp3 = float(item["tp3"])
+
+                new_status = None
+
+                if direction == "LONG":
+                    if low <= stop_loss:
+                        new_status = "STOP_HIT"
+                    elif high >= tp3:
+                        new_status = "TP3_HIT"
+                    elif high >= tp2:
+                        new_status = "TP2_HIT"
+                    elif high >= tp1:
+                        new_status = "TP1_HIT"
+                else:
+                    if high >= stop_loss:
+                        new_status = "STOP_HIT"
+                    elif low <= tp3:
+                        new_status = "TP3_HIT"
+                    elif low <= tp2:
+                        new_status = "TP2_HIT"
+                    elif low <= tp1:
+                        new_status = "TP1_HIT"
+
+                if new_status:
+                    self.trade_tracker.update_signal(item["id"], new_status)
+                    logger.info(f"[TRACKER] {symbol} {direction} -> {new_status}")
+
+            except Exception as error:
+                logger.exception(f"[TRACKER ERROR] {item.get('symbol')} | {error}")
 
     def _format_diag(self, diagnostics: dict) -> str:
         if not diagnostics:
@@ -139,6 +215,8 @@ class MarketScanner:
 
     async def scan_market(self, bot: Bot, send_to_telegram: bool = True) -> List[SignalCheckResult]:
         async with self._scan_lock:
+            await self.check_open_signals()
+
             logger.info(f"Старт сканирования рынка... режим={Config.STRATEGY_MODE}")
 
             symbols = await self._load_symbols_for_scan()
@@ -198,6 +276,7 @@ class MarketScanner:
                         self._set_cooldown(signal.symbol, signal.direction)
                         self._remember_signal(signal)
                         self._log_signal_to_history(signal)
+                        self._track_new_signal(signal)
                         logger.info(f"Сигнал отправлен: {signal.symbol}")
                     except Exception as error:
                         logger.exception(f"Ошибка отправки сигнала {signal.symbol}: {error}")
