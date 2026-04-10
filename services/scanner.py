@@ -132,6 +132,18 @@ class MarketScanner:
     def get_best_pairs(self, min_closed: int = 1, limit: int = 5) -> list[dict]:
         return self.trade_tracker.get_best_pairs(min_closed=min_closed, limit=limit)
 
+    def get_side_stats(self) -> dict:
+        return self.trade_tracker.get_side_stats()
+
+    def get_daily_report(self) -> list[dict]:
+        return self.trade_tracker.get_daily_report()
+
+    def get_csv_path(self) -> str:
+        return self.trade_tracker.get_csv_path()
+
+    def get_json_path(self) -> str:
+        return self.trade_tracker.get_json_path()
+
     async def _send_closed_signal_notifications(self, bot: Bot):
         items = self.trade_tracker.get_unnotified_closed_signals()
 
@@ -182,7 +194,7 @@ class MarketScanner:
                     if len(ltf_df) < 2:
                         continue
 
-                    last_closed = ltf_df.iloc[-2]
+                        last_closed = ltf_df.iloc[-2]
                     high = float(last_closed["high"])
                     low = float(last_closed["low"])
 
@@ -213,7 +225,7 @@ class MarketScanner:
                             new_status = "TP1_HIT"
 
                     if new_status:
-                        updated = self.trade_tracker.update_signal(item["id"], new_status)
+                        self.trade_tracker.update_signal(item["id"], new_status)
                         logger.info(f"[TRACKER] {symbol} {direction} -> {new_status}")
 
                 except Exception as error:

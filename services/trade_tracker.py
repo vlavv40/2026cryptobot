@@ -1,5 +1,6 @@
 import csv
 import json
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -169,3 +170,48 @@ class TradeTracker:
     def get_best_pairs(self, min_closed: int = 1, limit: int = 5) -> list[dict]:
         analyzer = StatsAnalyzer(self.get_all_signals())
         return analyzer.best_pairs(min_closed=min_closed, limit=limit)
+
+    def get_side_stats(self) -> dict:
+        data = self.get_all_signals()
+
+        def build(direction: str) -> dict:
+            filtered = [x for x in data if x.get("direction") == direction]
+            analyzer = StatsAnalyzer(filtered)
+            return analyzer.overall_stats()
+
+        return {
+            "LONG": build("LONG"),
+            "SHORT": build("SHORT"),
+        }
+
+    def get_daily_report(self) -> list[dict]:
+        data = self.get_all_signals()
+        grouped = defaultdict(list)
+
+        for item in data:
+            created_at = item.get("created_at")
+            if not created_at:
+                continue
+
+            day = created_at[:10]
+            grouped[day].append(item)
+
+        report = []
+        for day, items in grouped.items():
+            analyzer = StatsAnalyzer(items)
+            stats = analyzer.overall_stats()
+            report.append(
+                {
+                    "day": day,
+                    **stats,
+                }
+            )
+
+        report.sort(key=lambda x: x["day"], reverse=True)
+        return report
+
+    def get_json_path(self) -> str:
+        return str(self.path)
+
+    def get_csv_path(self) -> str:
+        return str(self.csv_path)

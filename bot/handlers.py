@@ -1,6 +1,6 @@
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
 
 from config import Config
 
@@ -20,9 +20,13 @@ async def start_handler(message: Message):
         "/mode - показать текущие настройки\n"
         "/lastsignals - показать последние сигналы\n"
         "/open_signals - показать открытые сигналы\n"
-        "/stats - показать статистику\n"
+        "/stats - показать общую статистику\n"
         "/stats_detailed - статистика по парам\n"
-        "/best_pairs - лучшие пары"
+        "/best_pairs - лучшие пары\n"
+        "/stats_sides - статистика LONG/SHORT\n"
+        "/daily_report - дневной отчёт\n"
+        "/export_csv - выгрузить CSV\n"
+        "/export_json - выгрузить JSON"
     )
 
 
@@ -174,6 +178,88 @@ async def best_pairs_handler(message: Message):
         )
 
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("stats_sides"))
+async def stats_sides_handler(message: Message):
+    scanner = message.dispatcher.get("scanner")
+
+    if scanner is None:
+        await message.answer("Сканер пока недоступен.")
+        return
+
+    data = scanner.get_side_stats()
+    long_stats = data["LONG"]
+    short_stats = data["SHORT"]
+
+    await message.answer(
+        "📊 Статистика по направлениям\n\n"
+        f"LONG:\n"
+        f"- total: {long_stats['total']}\n"
+        f"- closed: {long_stats['closed']}\n"
+        f"- TP1: {long_stats['tp1_hit']}\n"
+        f"- TP2: {long_stats['tp2_hit']}\n"
+        f"- TP3: {long_stats['tp3_hit']}\n"
+        f"- STOP: {long_stats['stop_hit']}\n"
+        f"- winrate: {long_stats['winrate']}%\n\n"
+        f"SHORT:\n"
+        f"- total: {short_stats['total']}\n"
+        f"- closed: {short_stats['closed']}\n"
+        f"- TP1: {short_stats['tp1_hit']}\n"
+        f"- TP2: {short_stats['tp2_hit']}\n"
+        f"- TP3: {short_stats['tp3_hit']}\n"
+        f"- STOP: {short_stats['stop_hit']}\n"
+        f"- winrate: {short_stats['winrate']}%"
+    )
+
+
+@router.message(Command("daily_report"))
+async def daily_report_handler(message: Message):
+    scanner = message.dispatcher.get("scanner")
+
+    if scanner is None:
+        await message.answer("Сканер пока недоступен.")
+        return
+
+    report = scanner.get_daily_report()
+
+    if not report:
+        await message.answer("Дневной отчёт пока пуст.")
+        return
+
+    lines = ["🗓 Дневной отчёт:\n"]
+    for row in report[:7]:
+        lines.append(
+            f"{row['day']} | total={row['total']} | "
+            f"closed={row['closed']} | stop={row['stop_hit']} | "
+            f"winrate={row['winrate']}%"
+        )
+
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("export_csv"))
+async def export_csv_handler(message: Message):
+    scanner = message.dispatcher.get("scanner")
+
+    if scanner is None:
+        await message.answer("Сканер пока недоступен.")
+        return
+
+    path = scanner.get_csv_path()
+    await message.answer_document(FSInputFile(path), caption="tracked_signals.csv")
+
+
+@router.message(Command("export_json"))
+async def export_json_handler(message: Message):
+    scanner = message.dispatcher.get("scanner")
+
+    if scanner is None:
+        await message.answer("Сканер пока недоступен.")
+        return
+
+    path = scanner.get_json_path()
+    await message.answer_document(FSInputFile(path), caption="tracked_signals.json")
 
 
 @router.message(Command("scan"))
