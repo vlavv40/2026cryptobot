@@ -1,4 +1,4 @@
-from aiogram import Router
+from aiogram import Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, Message
 
@@ -59,12 +59,8 @@ async def mode_handler(message: Message):
 
 
 @router.message(Command("lastsignals"))
-async def lastsignals_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен.")
-        return
+async def lastsignals_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     signals = scanner.get_last_logged_signals(limit=5)
 
@@ -84,12 +80,8 @@ async def lastsignals_handler(message: Message):
 
 
 @router.message(Command("open_signals"))
-async def open_signals_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен.")
-        return
+async def open_signals_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     signals = scanner.get_open_signals()
 
@@ -109,12 +101,8 @@ async def open_signals_handler(message: Message):
 
 
 @router.message(Command("stats"))
-async def stats_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен.")
-        return
+async def stats_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     stats = scanner.get_stats()
 
@@ -132,12 +120,8 @@ async def stats_handler(message: Message):
 
 
 @router.message(Command("stats_detailed"))
-async def stats_detailed_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен.")
-        return
+async def stats_detailed_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     rows = scanner.get_pair_stats()
 
@@ -157,12 +141,8 @@ async def stats_detailed_handler(message: Message):
 
 
 @router.message(Command("best_pairs"))
-async def best_pairs_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен.")
-        return
+async def best_pairs_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     rows = scanner.get_best_pairs(min_closed=1, limit=5)
 
@@ -181,12 +161,8 @@ async def best_pairs_handler(message: Message):
 
 
 @router.message(Command("stats_sides"))
-async def stats_sides_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен.")
-        return
+async def stats_sides_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     data = scanner.get_side_stats()
     long_stats = data["LONG"]
@@ -214,12 +190,8 @@ async def stats_sides_handler(message: Message):
 
 
 @router.message(Command("daily_report"))
-async def daily_report_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен.")
-        return
+async def daily_report_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     report = scanner.get_daily_report()
 
@@ -239,36 +211,24 @@ async def daily_report_handler(message: Message):
 
 
 @router.message(Command("export_csv"))
-async def export_csv_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен.")
-        return
+async def export_csv_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     path = scanner.get_csv_path()
     await message.answer_document(FSInputFile(path), caption="tracked_signals.csv")
 
 
 @router.message(Command("export_json"))
-async def export_json_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен.")
-        return
+async def export_json_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     path = scanner.get_json_path()
     await message.answer_document(FSInputFile(path), caption="tracked_signals.json")
 
 
 @router.message(Command("scan"))
-async def scan_handler(message: Message):
-    scanner = message.dispatcher.get("scanner")
-
-    if scanner is None:
-        await message.answer("Сканер пока недоступен. Проверь запуск main.py")
-        return
+async def scan_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
 
     await message.answer("Запускаю ручной анализ рынка. Смотри результат в Telegram и логах.")
 
