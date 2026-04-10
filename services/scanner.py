@@ -7,6 +7,7 @@ from aiogram import Bot
 from config import Config
 from services.market_data import BinanceFuturesClient
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
+from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
 from services.telegram_sender import send_signal
 from utils.logger import setup_logger
@@ -19,6 +20,7 @@ class MarketScanner:
         self.client = BinanceFuturesClient()
         self.engine = SignalEngine()
         self.state = StateStore(Config.STATE_FILE)
+        self.signal_log = SignalLogStore()
         self._scan_lock = asyncio.Lock()
 
     def _make_cooldown_key(self, symbol: str, direction: str) -> str:
@@ -80,6 +82,25 @@ class MarketScanner:
             "saved_at": datetime.utcnow().isoformat(),
         }
         self.state.set_last_signal(key, payload)
+
+    def _log_signal_to_history(self, signal: Signal):
+        payload = {
+            "symbol": signal.symbol,
+            "direction": signal.direction,
+            "entry_min": signal.entry_min,
+            "entry_max": signal.entry_max,
+            "stop_loss": signal.stop_loss,
+            "tp1": signal.tp1,
+            "tp2": signal.tp2,
+            "tp3": signal.tp3,
+            "score": signal.score,
+            "reasons": signal.reasons,
+            "diagnostics": signal.diagnostics,
+        }
+        self.signal_log.add_signal(payload)
+
+    def get_last_logged_signals(self, limit: int = 5) -> list[dict]:
+        return self.signal_log.get_last_signals(limit=limit)
 
     def _format_diag(self, diagnostics: dict) -> str:
         if not diagnostics:
@@ -176,6 +197,7 @@ class MarketScanner:
                         await send_signal(bot, Config.CHAT_ID, signal)
                         self._set_cooldown(signal.symbol, signal.direction)
                         self._remember_signal(signal)
+                        self._log_signal_to_history(signal)
                         logger.info(f"Сигнал отправлен: {signal.symbol}")
                     except Exception as error:
                         logger.exception(f"Ошибка отправки сигнала {signal.symbol}: {error}")

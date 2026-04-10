@@ -10,6 +10,21 @@ from utils.logger import setup_logger
 logger = setup_logger()
 
 
+async def send_startup_message(bot: Bot):
+    try:
+        text = (
+            "✅ Бот успешно запущен\n\n"
+            f"Режим: {Config.STRATEGY_MODE}\n"
+            f"Интервал сканирования: {Config.SCAN_INTERVAL_SECONDS} сек\n"
+            f"Максимум сигналов за цикл: {Config.MAX_SIGNALS_PER_SCAN}\n"
+            f"Максимум пар в анализе: {Config.MAX_SYMBOLS_TO_SCAN}\n"
+            f"Cooldown: {Config.SIGNAL_COOLDOWN_MINUTES} мин"
+        )
+        await bot.send_message(chat_id=Config.CHAT_ID, text=text)
+    except Exception as error:
+        logger.exception(f"Не удалось отправить сообщение о старте: {error}")
+
+
 async def auto_scan_loop(bot: Bot, scanner: MarketScanner):
     while True:
         try:
@@ -35,6 +50,8 @@ async def main():
     dp["scanner"] = scanner
 
     dp.include_router(router)
+
+    await send_startup_message(bot)
 
     asyncio.create_task(auto_scan_loop(bot, scanner))
 
