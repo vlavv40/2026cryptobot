@@ -25,6 +25,8 @@ async def start_handler(message: Message):
         "/best_pairs - лучшие пары\n"
         "/stats_sides - статистика LONG/SHORT\n"
         "/daily_report - дневной отчёт\n"
+        "/weekly_report - недельный отчёт\n"
+        "/pnl_stats - PnL в R\n"
         "/export_csv - выгрузить CSV\n"
         "/export_json - выгрузить JSON"
     )
@@ -61,7 +63,6 @@ async def mode_handler(message: Message):
 @router.message(Command("lastsignals"))
 async def lastsignals_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
     signals = scanner.get_last_logged_signals(limit=5)
 
     if not signals:
@@ -82,7 +83,6 @@ async def lastsignals_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("open_signals"))
 async def open_signals_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
     signals = scanner.get_open_signals()
 
     if not signals:
@@ -103,7 +103,6 @@ async def open_signals_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("stats"))
 async def stats_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
     stats = scanner.get_stats()
 
     await message.answer(
@@ -115,6 +114,24 @@ async def stats_handler(message: Message, dispatcher: Dispatcher):
         f"TP2: {stats['tp2_hit']}\n"
         f"TP3: {stats['tp3_hit']}\n"
         f"STOP: {stats['stop_hit']}\n"
+        f"Winrate: {stats['winrate']}%\n"
+        f"Total R: {stats['total_r']}\n"
+        f"Avg R: {stats['avg_r']}\n"
+        f"Expectancy: {stats['expectancy']}"
+    )
+
+
+@router.message(Command("pnl_stats"))
+async def pnl_stats_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
+    stats = scanner.get_stats()
+
+    await message.answer(
+        "💰 PnL статистика в R\n\n"
+        f"Закрытых сигналов: {stats['closed']}\n"
+        f"Total R: {stats['total_r']}\n"
+        f"Avg R: {stats['avg_r']}\n"
+        f"Expectancy: {stats['expectancy']}\n"
         f"Winrate: {stats['winrate']}%"
     )
 
@@ -122,7 +139,6 @@ async def stats_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("stats_detailed"))
 async def stats_detailed_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
     rows = scanner.get_pair_stats()
 
     if not rows:
@@ -132,9 +148,9 @@ async def stats_detailed_handler(message: Message, dispatcher: Dispatcher):
     lines = ["📈 Статистика по парам:\n"]
     for row in rows[:10]:
         lines.append(
-            f"{row['symbol']} | total={row['total']} | "
-            f"closed={row['closed']} | stop={row['stop_hit']} | "
-            f"winrate={row['winrate']}%"
+            f"{row['symbol']} | closed={row['closed']} | "
+            f"winrate={row['winrate']}% | "
+            f"totalR={row['total_r']} | exp={row['expectancy']}"
         )
 
     await message.answer("\n".join(lines))
@@ -143,7 +159,6 @@ async def stats_detailed_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("best_pairs"))
 async def best_pairs_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
     rows = scanner.get_best_pairs(min_closed=1, limit=5)
 
     if not rows:
@@ -154,7 +169,7 @@ async def best_pairs_handler(message: Message, dispatcher: Dispatcher):
     for row in rows:
         lines.append(
             f"{row['symbol']} | winrate={row['winrate']}% | "
-            f"closed={row['closed']} | stop={row['stop_hit']}"
+            f"closed={row['closed']} | totalR={row['total_r']} | exp={row['expectancy']}"
         )
 
     await message.answer("\n".join(lines))
@@ -163,7 +178,6 @@ async def best_pairs_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("stats_sides"))
 async def stats_sides_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
     data = scanner.get_side_stats()
     long_stats = data["LONG"]
     short_stats = data["SHORT"]
@@ -173,26 +187,23 @@ async def stats_sides_handler(message: Message, dispatcher: Dispatcher):
         f"LONG:\n"
         f"- total: {long_stats['total']}\n"
         f"- closed: {long_stats['closed']}\n"
-        f"- TP1: {long_stats['tp1_hit']}\n"
-        f"- TP2: {long_stats['tp2_hit']}\n"
-        f"- TP3: {long_stats['tp3_hit']}\n"
-        f"- STOP: {long_stats['stop_hit']}\n"
-        f"- winrate: {long_stats['winrate']}%\n\n"
+        f"- winrate: {long_stats['winrate']}%\n"
+        f"- totalR: {long_stats['total_r']}\n"
+        f"- avgR: {long_stats['avg_r']}\n"
+        f"- expectancy: {long_stats['expectancy']}\n\n"
         f"SHORT:\n"
         f"- total: {short_stats['total']}\n"
         f"- closed: {short_stats['closed']}\n"
-        f"- TP1: {short_stats['tp1_hit']}\n"
-        f"- TP2: {short_stats['tp2_hit']}\n"
-        f"- TP3: {short_stats['tp3_hit']}\n"
-        f"- STOP: {short_stats['stop_hit']}\n"
-        f"- winrate: {short_stats['winrate']}%"
+        f"- winrate: {short_stats['winrate']}%\n"
+        f"- totalR: {short_stats['total_r']}\n"
+        f"- avgR: {short_stats['avg_r']}\n"
+        f"- expectancy: {short_stats['expectancy']}"
     )
 
 
 @router.message(Command("daily_report"))
 async def daily_report_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
     report = scanner.get_daily_report()
 
     if not report:
@@ -202,9 +213,27 @@ async def daily_report_handler(message: Message, dispatcher: Dispatcher):
     lines = ["🗓 Дневной отчёт:\n"]
     for row in report[:7]:
         lines.append(
-            f"{row['day']} | total={row['total']} | "
-            f"closed={row['closed']} | stop={row['stop_hit']} | "
-            f"winrate={row['winrate']}%"
+            f"{row['day']} | closed={row['closed']} | "
+            f"winrate={row['winrate']}% | totalR={row['total_r']}"
+        )
+
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("weekly_report"))
+async def weekly_report_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
+    report = scanner.get_weekly_report()
+
+    if not report:
+        await message.answer("Недельный отчёт пока пуст.")
+        return
+
+    lines = ["📅 Недельный отчёт:\n"]
+    for row in report[:7]:
+        lines.append(
+            f"{row['week']} | closed={row['closed']} | "
+            f"winrate={row['winrate']}% | totalR={row['total_r']}"
         )
 
     await message.answer("\n".join(lines))
@@ -213,7 +242,6 @@ async def daily_report_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("export_csv"))
 async def export_csv_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
     path = scanner.get_csv_path()
     await message.answer_document(FSInputFile(path), caption="tracked_signals.csv")
 
@@ -221,7 +249,6 @@ async def export_csv_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("export_json"))
 async def export_json_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
     path = scanner.get_json_path()
     await message.answer_document(FSInputFile(path), caption="tracked_signals.json")
 
@@ -231,7 +258,5 @@ async def scan_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
 
     await message.answer("Запускаю ручной анализ рынка. Смотри результат в Telegram и логах.")
-
     await scanner.scan_market(message.bot, send_to_telegram=True)
-
     await message.answer("Ручной анализ завершён.")

@@ -138,6 +138,9 @@ class MarketScanner:
     def get_daily_report(self) -> list[dict]:
         return self.trade_tracker.get_daily_report()
 
+    def get_weekly_report(self) -> list[dict]:
+        return self.trade_tracker.get_weekly_report()
+
     def get_csv_path(self) -> str:
         return self.trade_tracker.get_csv_path()
 
@@ -152,6 +155,7 @@ class MarketScanner:
                 status = item["status"]
                 symbol = item["symbol"]
                 direction = item["direction"]
+                realized_r = item.get("realized_r")
 
                 emoji_map = {
                     "TP1_HIT": "✅",
@@ -167,6 +171,7 @@ class MarketScanner:
                     f"Монета: {symbol}\n"
                     f"Направление: {direction}\n"
                     f"Статус: {status}\n"
+                    f"R результат: {realized_r}\n"
                     f"Вход: {item['entry_min']} - {item['entry_max']}\n"
                     f"Stop Loss: {item['stop_loss']}\n"
                     f"TP1: {item['tp1']}\n"
@@ -194,7 +199,7 @@ class MarketScanner:
                     if len(ltf_df) < 2:
                         continue
 
-                        last_closed = ltf_df.iloc[-2]
+                    last_closed = ltf_df.iloc[-2]
                     high = float(last_closed["high"])
                     low = float(last_closed["low"])
 

@@ -1,6 +1,5 @@
 import csv
 import json
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +36,7 @@ class TradeTracker:
                     "tp3",
                     "score",
                     "status",
+                    "realized_r",
                     "created_at",
                     "closed_at",
                     "notified",
@@ -60,6 +60,7 @@ class TradeTracker:
                     "tp3",
                     "score",
                     "status",
+                    "realized_r",
                     "created_at",
                     "closed_at",
                     "notified",
@@ -80,6 +81,7 @@ class TradeTracker:
                         "tp3": row.get("tp3"),
                         "score": row.get("score"),
                         "status": row.get("status"),
+                        "realized_r": row.get("realized_r"),
                         "created_at": row.get("created_at"),
                         "closed_at": row.get("closed_at"),
                         "notified": row.get("notified", False),
@@ -103,11 +105,53 @@ class TradeTracker:
 
         self._rewrite_csv(data)
 
+    def _calculate_realized_r(self, item: dict, status: str) -> float:
+        entry_min = float(item["entry_min"])
+        entry_max = float(item["entry_max"])
+        stop_loss = float(item["stop_loss"])
+        tp1 = float(item["tp1"])
+        tp2 = float(item["tp2"])
+        tp3 = float(item["tp3"])
+
+        entry_mid = (entry_min + entry_max) / 2.0
+        direction = item["direction"]
+
+        if direction == "LONG":
+            risk = entry_mid - stop_loss
+            if risk <= 0:
+                return 0.0
+
+            if status == "STOP_HIT":
+                return -1.0
+            if status == "TP1_HIT":
+                return round((tp1 - entry_mid) / risk, 4)
+            if status == "TP2_HIT":
+                return round((tp2 - entry_mid) / risk, 4)
+            if status == "TP3_HIT":
+                return round((tp3 - entry_mid) / risk, 4)
+
+        else:
+            risk = stop_loss - entry_mid
+            if risk <= 0:
+                return 0.0
+
+            if status == "STOP_HIT":
+                return -1.0
+            if status == "TP1_HIT":
+                return round((entry_mid - tp1) / risk, 4)
+            if status == "TP2_HIT":
+                return round((entry_mid - tp2) / risk, 4)
+            if status == "TP3_HIT":
+                return round((entry_mid - tp3) / risk, 4)
+
+        return 0.0
+
     def add_signal(self, payload: dict):
         data = self._load()
         payload["created_at"] = datetime.utcnow().isoformat()
         payload["status"] = "OPEN"
         payload["closed_at"] = None
+        payload["realized_r"] = None
         payload["notified"] = False
         data.append(payload)
         data = data[-500:]
@@ -129,6 +173,7 @@ class TradeTracker:
             if item.get("id") == target_id and item.get("status") == "OPEN":
                 item["status"] = new_status
                 item["closed_at"] = datetime.utcnow().isoformat()
+                item["realized_r"] = self._calculate_realized_r(item, new_status)
                 item["notified"] = False
                 updated_item = item.copy()
                 changed = True
@@ -172,43 +217,16 @@ class TradeTracker:
         return analyzer.best_pairs(min_closed=min_closed, limit=limit)
 
     def get_side_stats(self) -> dict:
-        data = self.get_all_signals()
-
-        def build(direction: str) -> dict:
-            filtered = [x for x in data if x.get("direction") == direction]
-            analyzer = StatsAnalyzer(filtered)
-            return analyzer.overall_stats()
-
-        return {
-            "LONG": build("LONG"),
-            "SHORT": build("SHORT"),
-        }
+        analyzer = StatsAnalyzer(self.get_all_signals())
+        return analyzer.side_stats()
 
     def get_daily_report(self) -> list[dict]:
-        data = self.get_all_signals()
-        grouped = defaultdict(list)
+        analyzer = StatsAnalyzer(self.get_all_signals())
+        return analyzer.grouped_by_day()
 
-        for item in data:
-            created_at = item.get("created_at")
-            if not created_at:
-                continue
-
-            day = created_at[:10]
-            grouped[day].append(item)
-
-        report = []
-        for day, items in grouped.items():
-            analyzer = StatsAnalyzer(items)
-            stats = analyzer.overall_stats()
-            report.append(
-                {
-                    "day": day,
-                    **stats,
-                }
-            )
-
-        report.sort(key=lambda x: x["day"], reverse=True)
-        return report
+    def get_weekly_report(self) -> list[dict]:
+        analyzer = StatsAnalyzer(self.get_all_signals())
+        return analyzer.grouped_by_week()
 
     def get_json_path(self) -> str:
         return str(self.path)
