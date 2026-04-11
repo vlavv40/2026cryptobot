@@ -1,8 +1,7 @@
 from aiogram import Bot
-from services.signal_engine import Signal
 
 
-def format_signal_message(signal: Signal) -> str:
+def format_signal(signal) -> str:
     reasons_text = "\n".join([f"- {reason}" for reason in signal.reasons])
 
     return (
@@ -14,11 +13,19 @@ def format_signal_message(signal: Signal) -> str:
         f"🎯 TP2: {signal.tp2}\n"
         f"🎯 TP3: {signal.tp3}\n"
         f"📊 Сила сигнала: {signal.score}/10\n"
-        f"🧠 Причина:\n"
-        f"{reasons_text}"
+        f"🧠 Причина:\n{reasons_text}"
     )
 
 
-async def send_signal(bot: Bot, chat_id: str, signal: Signal):
-    text = format_signal_message(signal)
-    await bot.send_message(chat_id=chat_id, text=text)
+async def send_text_to_all(bot: Bot, chat_ids: list[str], text: str):
+    for chat_id in chat_ids:
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception:
+            # Не валим весь цикл, если одному пользователю не удалось отправить
+            continue
+
+
+async def send_signal(bot: Bot, chat_ids: list[str], signal):
+    text = format_signal(signal)
+    await send_text_to_all(bot, chat_ids, text)

@@ -12,7 +12,7 @@ from services.news_guard import NewsGuard
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
-from services.telegram_sender import send_signal
+from services.telegram_sender import send_signal, send_text_to_all
 from services.trade_tracker import TradeTracker
 from utils.logger import setup_logger
 
@@ -213,7 +213,7 @@ class MarketScanner:
                     f"TP3: {item['tp3']}"
                 )
 
-                await bot.send_message(chat_id=Config.CHAT_ID, text=text)
+                await send_text_to_all(bot, Config.CHAT_IDS, text)
                 self.trade_tracker.mark_notified(item["id"])
                 logger.info(f"[NOTIFY] Отправлен результат сигнала {symbol} -> {status}")
 
@@ -318,7 +318,7 @@ class MarketScanner:
                 f"Sentiment: {sentiment}\n"
                 f"Открытых сигналов: {len(self.get_open_signals())}"
             )
-            await bot.send_message(chat_id=Config.CHAT_ID, text=text)
+            await send_text_to_all(bot, Config.CHAT_IDS, text)
         except Exception as error:
             logger.exception(f"Не удалось отправить старт цикла: {error}")
 
@@ -337,7 +337,7 @@ class MarketScanner:
                 f"Открытых сигналов сейчас: {len(self.get_open_signals())}\n\n"
                 f"Главные причины skip:\n{reasons_text}"
             )
-            await bot.send_message(chat_id=Config.CHAT_ID, text=text)
+            await send_text_to_all(bot, Config.CHAT_IDS, text)
         except Exception as error:
             logger.exception(f"Не удалось отправить завершение цикла: {error}")
 
@@ -462,7 +462,7 @@ class MarketScanner:
             if send_to_telegram and top_signals:
                 for signal in top_signals:
                     try:
-                        await send_signal(bot, Config.CHAT_ID, signal)
+                        await send_signal(bot, Config.CHAT_IDS, signal)
                         self._set_cooldown(signal.symbol, signal.direction)
                         self._remember_signal(signal)
                         self._log_signal_to_history(signal)

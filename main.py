@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher
 from bot.handlers import router
 from config import Config
 from services.scanner import MarketScanner
+from services.telegram_sender import send_text_to_all
 from utils.logger import setup_logger
 
 logger = setup_logger()
@@ -18,9 +19,10 @@ async def send_startup_message(bot: Bot):
             f"Интервал сканирования: {Config.SCAN_INTERVAL_SECONDS} сек\n"
             f"Максимум сигналов за цикл: {Config.MAX_SIGNALS_PER_SCAN}\n"
             f"Максимум пар в анализе: {Config.MAX_SYMBOLS_TO_SCAN}\n"
-            f"Cooldown: {Config.SIGNAL_COOLDOWN_MINUTES} мин"
+            f"Cooldown: {Config.SIGNAL_COOLDOWN_MINUTES} мин\n"
+            f"Получателей уведомлений: {len(Config.CHAT_IDS)}"
         )
-        await bot.send_message(chat_id=Config.CHAT_ID, text=text)
+        await send_text_to_all(bot, Config.CHAT_IDS, text)
     except Exception as error:
         logger.exception(f"Не удалось отправить сообщение о старте: {error}")
 
@@ -38,10 +40,10 @@ async def auto_scan_loop(bot: Bot, scanner: MarketScanner):
 
 async def main():
     if not Config.BOT_TOKEN:
-        raise ValueError("BOT_TOKEN не найден. Проверь файл .env")
+        raise ValueError("BOT_TOKEN не найден. Проверь Variables")
 
-    if not Config.CHAT_ID:
-        raise ValueError("CHAT_ID не найден. Проверь файл .env")
+    if not Config.CHAT_IDS:
+        raise ValueError("CHAT_IDS не найден. Проверь Variables")
 
     bot = Bot(token=Config.BOT_TOKEN)
     dp = Dispatcher()

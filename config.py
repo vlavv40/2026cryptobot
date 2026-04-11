@@ -6,7 +6,9 @@ load_dotenv()
 
 class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-    CHAT_ID = os.getenv("CHAT_ID", "")
+
+    RAW_CHAT_IDS = os.getenv("CHAT_IDS", "")
+    CHAT_IDS = [chat_id.strip() for chat_id in RAW_CHAT_IDS.split(",") if chat_id.strip()]
 
     BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
 
@@ -62,20 +64,15 @@ class Config:
 
     SETUP_PRICE_TOLERANCE = 0.0035
 
-    # News Guard
-    NEWS_GUARD_ENABLED = os.getenv("NEWS_GUARD_ENABLED", "true").lower() == "true"
-    NEWS_SENTIMENT_ENABLED = os.getenv("NEWS_SENTIMENT_ENABLED", "true").lower() == "true"
+    NEWS_GUARD_ENABLED = os.getenv("NEWS_GUARD_ENABLED", "false").lower() == "true"
+    NEWS_SENTIMENT_ENABLED = os.getenv("NEWS_SENTIMENT_ENABLED", "false").lower() == "true"
 
     FMP_API_KEY = os.getenv("FMP_API_KEY", "")
     NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
     NEWS_LOOKAHEAD_MINUTES = int(os.getenv("NEWS_LOOKAHEAD_MINUTES", "60"))
     NEWS_COOLDOWN_AFTER_MINUTES = int(os.getenv("NEWS_COOLDOWN_AFTER_MINUTES", "30"))
-
-    # Только события высокой важности будут блокировать сигналы
     BLOCK_HIGH_IMPACT_NEWS_ONLY = os.getenv("BLOCK_HIGH_IMPACT_NEWS_ONLY", "true").lower() == "true"
-
-    # Если headlines очень негативные/позитивные — блокируем противоположные сигналы
     NEWS_SENTIMENT_BLOCK_THRESHOLD = int(os.getenv("NEWS_SENTIMENT_BLOCK_THRESHOLD", "2"))
 
     if STRATEGY_MODE == "SNIPER":
