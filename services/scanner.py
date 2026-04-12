@@ -12,7 +12,11 @@ from services.news_guard import NewsGuard
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
-from services.telegram_sender import send_signal, send_text_to_all
+from services.telegram_sender import (
+    format_result_message,
+    send_signal,
+    send_text_to_all,
+)
 from services.trade_tracker import TradeTracker
 from utils.logger import setup_logger
 
@@ -170,53 +174,15 @@ class MarketScanner:
             "last_cycle": self.last_cycle_info,
         }
 
-    async def get_news_guard_status(self) -> dict:
-        decision = await self.news_guard.evaluate_market()
-        return {
-            "blocked": decision.blocked,
-            "reason": decision.reason,
-            "sentiment_bias": decision.sentiment_bias,
-            "negative_count": decision.negative_count,
-            "positive_count": decision.positive_count,
-            "macro_events_count": len(decision.macro_events),
-        }
-
     async def _send_closed_signal_notifications(self, bot: Bot):
         items = self.trade_tracker.get_unnotified_closed_signals()
 
         for item in items:
             try:
-                status = item["status"]
-                symbol = item["symbol"]
-                direction = item["direction"]
-                realized_r = item.get("realized_r")
-
-                emoji_map = {
-                    "TP1_HIT": "✅",
-                    "TP2_HIT": "✅",
-                    "TP3_HIT": "✅",
-                    "STOP_HIT": "❌",
-                }
-
-                emoji = emoji_map.get(status, "ℹ️")
-
-                text = (
-                    f"{emoji} Результат сигнала\n\n"
-                    f"Монета: {symbol}\n"
-                    f"Направление: {direction}\n"
-                    f"Статус: {status}\n"
-                    f"R результат: {realized_r}\n"
-                    f"Вход: {item['entry_min']} - {item['entry_max']}\n"
-                    f"Stop Loss: {item['stop_loss']}\n"
-                    f"TP1: {item['tp1']}\n"
-                    f"TP2: {item['tp2']}\n"
-                    f"TP3: {item['tp3']}"
-                )
-
+                text = format_result_message(item)
                 await send_text_to_all(bot, Config.CHAT_IDS, text)
                 self.trade_tracker.mark_notified(item["id"])
-                logger.info(f"[NOTIFY] Отправлен результат сигнала {symbol} -> {status}")
-
+                logger.info(f"[NOTIFY] Отправлен результат сигнала {item['symbol']} -> {item['status']}")
             except Exception as error:
                 logger.exception(f"[NOTIFY ERROR] {item.get('symbol')} | {error}")
 
@@ -307,47 +273,13 @@ class MarketScanner:
         logger.info("Использую резервный список пар из config.py")
         return Config.DEFAULT_SYMBOLS
 
-    async def _send_cycle_start(self, bot: Bot, symbols_count: int, news_block: bool, news_reason: str, sentiment: str):
-        try:
-            text = (
-                "🔄 Новый цикл анализа\n\n"
-                f"Режим: {Config.STRATEGY_MODE}\n"
-                f"Пары в анализе: {symbols_count}\n"
-                f"News block: {'да' if news_block else 'нет'}\n"
-                f"Причина news guard: {news_reason}\n"
-                f"Sentiment: {sentiment}\n"
-                f"Открытых сигналов: {len(self.get_open_signals())}"
-            )
-            await send_text_to_all(bot, Config.CHAT_IDS, text)
-        except Exception as error:
-            logger.exception(f"Не удалось отправить старт цикла: {error}")
-
-    async def _send_cycle_finish(self, bot: Bot, checked: int, signals_found: int, skip_summary: dict):
-        try:
-            if skip_summary:
-                top_reasons = sorted(skip_summary.items(), key=lambda x: x[1], reverse=True)[:5]
-                reasons_text = "\n".join([f"- {reason}: {count}" for reason, count in top_reasons])
-            else:
-                reasons_text = "- нет skip-причин"
-
-            text = (
-                "✅ Цикл завершён\n\n"
-                f"Проверено пар: {checked}\n"
-                f"Найдено сильных сигналов: {signals_found}\n"
-                f"Открытых сигналов сейчас: {len(self.get_open_signals())}\n\n"
-                f"Главные причины skip:\n{reasons_text}"
-            )
-            await send_text_to_all(bot, Config.CHAT_IDS, text)
-        except Exception as error:
-            logger.exception(f"Не удалось отправить завершение цикла: {error}")
-
     async def scan_market(self, bot: Bot, send_to_telegram: bool = True) -> List[SignalCheckResult]:
         async with self._scan_lock:
             await self.check_open_signals(bot)
 
             cycle_started_at = datetime.utcnow().isoformat()
-
             news_decision = await self.news_guard.evaluate_market()
+
             logger.info(
                 f"Старт сканирования рынка... режим={Config.STRATEGY_MODE} | "
                 f"news_block={news_decision.blocked} | "
@@ -368,13 +300,11 @@ class MarketScanner:
                     "top_signal_symbols": [],
                 }
 
-                if send_to_telegram:
-                    await self._send_cycle_start(
-                        bot=bot,
-                        symbols_count=0,
-                        news_block=True,
-                        news_reason=news_decision.reason,
-                        sentiment=news_decision.sentiment_bias,
+                if send_to_telegram and Config.SEND_NEWS_BLOCK_MESSAGE:
+                    await send_text_to_all(
+                        bot,
+                        Config.CHAT_IDS,
+                        f"🛑 News block\n\nПричина: {news_decision.reason}\nSentiment: {news_decision.sentiment_bias}",
                     )
 
                 logger.info(f"[NEWS BLOCK] {news_decision.reason}")
@@ -382,13 +312,17 @@ class MarketScanner:
 
             symbols = await self._load_symbols_for_scan()
 
-            if send_to_telegram:
-                await self._send_cycle_start(
-                    bot=bot,
-                    symbols_count=len(symbols),
-                    news_block=False,
-                    news_reason=news_decision.reason,
-                    sentiment=news_decision.sentiment_bias,
+            if send_to_telegram and Config.SEND_CYCLE_MESSAGES:
+                await send_text_to_all(
+                    bot,
+                    Config.CHAT_IDS,
+                    (
+                        "🔄 Новый цикл анализа\n\n"
+                        f"Режим: {Config.STRATEGY_MODE}\n"
+                        f"Пары в анализе: {len(symbols)}\n"
+                        f"Sentiment: {news_decision.sentiment_bias}\n"
+                        f"Открытых сигналов: {len(self.get_open_signals())}"
+                    ),
                 )
 
             results: List[SignalCheckResult] = []
@@ -483,12 +417,22 @@ class MarketScanner:
                 "top_signal_symbols": [s.symbol for s in top_signals],
             }
 
-            if send_to_telegram:
-                await self._send_cycle_finish(
-                    bot=bot,
-                    checked=len(symbols),
-                    signals_found=len(top_signals),
-                    skip_summary=dict(skip_counter),
+            if send_to_telegram and Config.SEND_CYCLE_MESSAGES:
+                if skip_counter:
+                    top_reasons = sorted(skip_counter.items(), key=lambda x: x[1], reverse=True)[:5]
+                    reasons_text = "\n".join(f"• {reason}: {count}" for reason, count in top_reasons)
+                else:
+                    reasons_text = "• нет skip-причин"
+
+                await send_text_to_all(
+                    bot,
+                    Config.CHAT_IDS,
+                    (
+                        "✅ Цикл завершён\n\n"
+                        f"Проверено пар: {len(symbols)}\n"
+                        f"Найдено сильных сигналов: {len(top_signals)}\n"
+                        f"Главные причины skip:\n{reasons_text}"
+                    ),
                 )
 
             if not top_signals:

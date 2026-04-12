@@ -12,15 +12,16 @@ logger = setup_logger()
 
 
 async def send_startup_message(bot: Bot):
+    if not Config.SEND_STARTUP_MESSAGE:
+        return
+
     try:
         text = (
-            "✅ Бот успешно запущен\n\n"
+            "✅ Бот запущен\n\n"
             f"Режим: {Config.STRATEGY_MODE}\n"
-            f"Интервал сканирования: {Config.SCAN_INTERVAL_SECONDS} сек\n"
-            f"Максимум сигналов за цикл: {Config.MAX_SIGNALS_PER_SCAN}\n"
-            f"Максимум пар в анализе: {Config.MAX_SYMBOLS_TO_SCAN}\n"
-            f"Cooldown: {Config.SIGNAL_COOLDOWN_MINUTES} мин\n"
-            f"Получателей уведомлений: {len(Config.CHAT_IDS)}"
+            f"Сканирование: каждые {Config.SCAN_INTERVAL_SECONDS} сек\n"
+            f"Пары в анализе: до {Config.MAX_SYMBOLS_TO_SCAN}\n"
+            f"Получателей: {len(Config.CHAT_IDS)}"
         )
         await send_text_to_all(bot, Config.CHAT_IDS, text)
     except Exception as error:
@@ -50,11 +51,9 @@ async def main():
     scanner = MarketScanner()
 
     dp["scanner"] = scanner
-
     dp.include_router(router)
 
     await send_startup_message(bot)
-
     asyncio.create_task(auto_scan_loop(bot, scanner))
 
     logger.info("Бот запущен.")

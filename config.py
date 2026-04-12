@@ -43,7 +43,6 @@ class Config:
         "OPUSDT",
         "ATOMUSDT",
     ]
-
     DEFAULT_SYMBOLS = PRIORITY_SYMBOLS.copy()
 
     EMA_ENTRY_FAST = 20
@@ -74,6 +73,11 @@ class Config:
     NEWS_COOLDOWN_AFTER_MINUTES = int(os.getenv("NEWS_COOLDOWN_AFTER_MINUTES", "30"))
     BLOCK_HIGH_IMPACT_NEWS_ONLY = os.getenv("BLOCK_HIGH_IMPACT_NEWS_ONLY", "true").lower() == "true"
     NEWS_SENTIMENT_BLOCK_THRESHOLD = int(os.getenv("NEWS_SENTIMENT_BLOCK_THRESHOLD", "2"))
+
+    # cleaner pack
+    SEND_STARTUP_MESSAGE = os.getenv("SEND_STARTUP_MESSAGE", "true").lower() == "true"
+    SEND_CYCLE_MESSAGES = os.getenv("SEND_CYCLE_MESSAGES", "false").lower() == "true"
+    SEND_NEWS_BLOCK_MESSAGE = os.getenv("SEND_NEWS_BLOCK_MESSAGE", "true").lower() == "true"
 
     if STRATEGY_MODE == "SNIPER":
         MIN_SCORE = 7.8
