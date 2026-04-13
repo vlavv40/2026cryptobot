@@ -72,12 +72,20 @@ class SignalEngine:
 
         resistance_gap = None
         support_gap = None
+        dist_ema20 = None
+        dist_ema50 = None
 
         if pd.notna(ltf_last["resistance"]) and ltf_last["close"] != 0:
             resistance_gap = (ltf_last["resistance"] - ltf_last["close"]) / ltf_last["close"]
 
         if pd.notna(ltf_last["support"]) and ltf_last["close"] != 0:
             support_gap = (ltf_last["close"] - ltf_last["support"]) / ltf_last["close"]
+
+        if pd.notna(ltf_last["ema20"]) and ltf_last["close"] != 0:
+            dist_ema20 = abs(ltf_last["close"] - ltf_last["ema20"]) / ltf_last["close"]
+
+        if pd.notna(ltf_last["ema50"]) and ltf_last["close"] != 0:
+            dist_ema50 = abs(ltf_last["close"] - ltf_last["ema50"]) / ltf_last["close"]
 
         return {
             "htf_adx": round(float(htf_last["adx"]), 3) if pd.notna(htf_last["adx"]) else None,
@@ -88,9 +96,9 @@ class SignalEngine:
             "ltf_quote_volume_ratio": round(float(ltf_last["quote_volume_ratio"]), 3) if pd.notna(ltf_last["quote_volume_ratio"]) else None,
             "resistance_gap": round(float(resistance_gap), 6) if resistance_gap is not None else None,
             "support_gap": round(float(support_gap), 6) if support_gap is not None else None,
+            "dist_ema20": round(float(dist_ema20), 6) if dist_ema20 is not None else None,
+            "dist_ema50": round(float(dist_ema50), 6) if dist_ema50 is not None else None,
             "ltf_close": round(float(ltf_last["close"]), 6) if pd.notna(ltf_last["close"]) else None,
-            "ltf_ema20": round(float(ltf_last["ema20"]), 6) if pd.notna(ltf_last["ema20"]) else None,
-            "ltf_ema50": round(float(ltf_last["ema50"]), 6) if pd.notna(ltf_last["ema50"]) else None,
         }
 
     def detect_trend(self, htf_df: pd.DataFrame) -> str:
@@ -128,6 +136,58 @@ class SignalEngine:
             return False, "1h не подтверждает SHORT: слабый ADX"
         return True, ""
 
+    def _check_quote_volume(self, ltf_df: pd.DataFrame) -> tuple[bool, str]:
+        last = self._closed(ltf_df)
+
+        if pd.isna(last["quote_volume_avg_20"]) or last["quote_volume_avg_20"] <= 0:
+            return False, "15m недостаточно данных по денежному объёму"
+
+        volume_ratio = last["quote_volume_ratio"]
+
+        if pd.isna(volume_ratio):
+            return False, "15m не удалось рассчитать денежный объём"
+
+        if volume_ratio < Config.MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO:
+            return False, "15m денежный объём слишком слабый"
+
+        return True, ""
+
+    def _check_not_chasing(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
+        last = self._closed(ltf_df)
+
+        dist_ema20 = abs(last["close"] - last["ema20"]) / last["close"]
+        dist_ema50 = abs(last["close"] - last["ema50"]) / last["close"]
+
+        if direction == "LONG":
+            if last["rsi"] > Config.LONG_MAX_RSI_ENTRY:
+                return False, "anti-fomo: LONG перегрет по RSI"
+            if dist_ema20 > Config.MAX_CHASE_DISTANCE_FROM_EMA20 and dist_ema50 > Config.MAX_CHASE_DISTANCE_FROM_EMA50:
+                return False, "anti-fomo: LONG слишком далеко от EMA20/EMA50"
+
+            if pd.notna(last["resistance"]):
+                gap_to_resistance = (last["resistance"] - last["close"]) / last["close"]
+                if gap_to_resistance <= 0:
+                    return False, "цена уже в сопротивлении"
+                if gap_to_resistance < Config.HARD_MIN_RESISTANCE_GAP:
+                    return False, "anti-fomo: слишком близкое сопротивление сверху"
+
+            return True, ""
+
+        if last["rsi"] < Config.SHORT_MIN_RSI_ENTRY:
+            return False, "anti-fomo: SHORT перегрет по RSI"
+
+        if dist_ema20 > Config.MAX_CHASE_DISTANCE_FROM_EMA20 and dist_ema50 > Config.MAX_CHASE_DISTANCE_FROM_EMA50:
+            return False, "anti-fomo: SHORT слишком далеко от EMA20/EMA50"
+
+        if pd.notna(last["support"]):
+            gap_to_support = (last["close"] - last["support"]) / last["close"]
+            if gap_to_support <= 0:
+                return False, "цена уже в поддержке"
+            if gap_to_support < Config.HARD_MIN_SUPPORT_GAP:
+                return False, "anti-fomo: слишком близкая поддержка снизу"
+
+        return True, ""
+
     def _check_retest_zone(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
         last = self._closed(ltf_df)
 
@@ -146,28 +206,16 @@ class SignalEngine:
             return False, "15m не удержал зону EMA20/EMA50 для SHORT"
         return True, ""
 
-    def _check_quote_volume(self, ltf_df: pd.DataFrame) -> tuple[bool, str]:
-        last = self._closed(ltf_df)
-
-        if pd.isna(last["quote_volume_avg_20"]) or last["quote_volume_avg_20"] <= 0:
-            return False, "15m недостаточно данных по денежному объёму"
-
-        volume_ratio = last["quote_volume_ratio"]
-
-        if pd.isna(volume_ratio):
-            return False, "15m не удалось рассчитать денежный объём"
-
-        if volume_ratio < Config.MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO:
-            return False, "15m денежный объём слишком слабый"
-
-        return True, ""
-
     def _check_ltf_quality(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
         last = self._closed(ltf_df)
         prev = self._prev_closed(ltf_df)
 
         if last["atr_ratio"] < Config.MIN_ATR_RATIO_15M:
             return False, "15m слишком вялый: ATR ratio ниже минимума"
+
+        anti_fomo_ok, anti_fomo_reason = self._check_not_chasing(direction, ltf_df)
+        if not anti_fomo_ok:
+            return False, anti_fomo_reason
 
         zone_ok, zone_reason = self._check_retest_zone(direction, ltf_df)
         if not zone_ok:
@@ -189,13 +237,6 @@ class SignalEngine:
             if not macd_ok:
                 return False, "15m MACD не подтверждает LONG"
 
-            if pd.notna(last["resistance"]):
-                gap_to_resistance = (last["resistance"] - last["close"]) / last["close"]
-                if gap_to_resistance <= 0:
-                    return False, "цена уже в сопротивлении"
-                if gap_to_resistance < Config.MIN_RESISTANCE_GAP:
-                    return False, "слишком близкое сопротивление сверху"
-
             return True, ""
 
         if not (32 <= last["rsi"] <= 54):
@@ -208,13 +249,6 @@ class SignalEngine:
         )
         if not macd_ok:
             return False, "15m MACD не подтверждает SHORT"
-
-        if pd.notna(last["support"]):
-            gap_to_support = (last["close"] - last["support"]) / last["close"]
-            if gap_to_support <= 0:
-                return False, "цена уже в поддержке"
-            if gap_to_support < Config.MIN_SUPPORT_GAP:
-                return False, "слишком близкая поддержка снизу"
 
         return True, ""
 
@@ -259,9 +293,12 @@ class SignalEngine:
                 score += 0.8
                 reasons.append("15m держится над зоной EMA20/EMA50")
 
-            if 49 <= ltf_last["rsi"] <= 62:
-                score += 0.8
-                reasons.append("RSI на 15m в сильной зоне роста")
+            if 49 <= ltf_last["rsi"] <= 58:
+                score += 1.0
+                reasons.append("RSI на 15m в рабочей зоне роста без перегрева")
+            elif 58 < ltf_last["rsi"] <= Config.LONG_MAX_RSI_ENTRY:
+                score += 0.4
+                reasons.append("RSI на 15m ближе к перегреву, но ещё допустим")
 
             if (
                 ltf_last["macd_hist"] > 0
@@ -312,9 +349,12 @@ class SignalEngine:
                 score += 0.8
                 reasons.append("15m держится под зоной EMA20/EMA50")
 
-            if 38 <= ltf_last["rsi"] <= 50:
-                score += 0.8
-                reasons.append("RSI на 15m в сильной зоне снижения")
+            if Config.SHORT_MIN_RSI_ENTRY <= ltf_last["rsi"] <= 50:
+                score += 1.0
+                reasons.append("RSI на 15m в рабочей зоне снижения без перегрева")
+            elif 50 < ltf_last["rsi"] <= 54:
+                score += 0.4
+                reasons.append("RSI на 15m хуже для SHORT, но ещё допустим")
 
             if (
                 ltf_last["macd_hist"] < 0
@@ -345,15 +385,17 @@ class SignalEngine:
 
     def build_trade_levels(self, direction: str, ltf_df: pd.DataFrame):
         last = self._closed(ltf_df)
-        atr = last["atr"]
-        close = last["close"]
+        atr = float(last["atr"])
+        close = float(last["close"])
         support = last["support"]
         resistance = last["resistance"]
-        ema20 = last["ema20"]
-        ema50 = last["ema50"]
+        ema20 = float(last["ema20"])
+        ema50 = float(last["ema50"])
 
         if pd.isna(atr) or atr <= 0:
             return None
+
+        stop_buffer = atr * Config.MIN_STOP_BUFFER_ATR
 
         if direction == "LONG":
             anchor = min(close, ema20, ema50)
@@ -362,9 +404,17 @@ class SignalEngine:
 
             stop_candidates = [close - atr * 1.2]
             if pd.notna(support):
-                stop_candidates.append(support - atr * 0.15)
+                stop_candidates.append(float(support) - atr * 0.15)
 
             stop_loss = min(stop_candidates)
+
+            # stop обязательно ниже нижней границы входа с буфером
+            max_allowed_stop = entry_min - stop_buffer
+            stop_loss = min(stop_loss, max_allowed_stop)
+
+            if stop_loss >= entry_min:
+                return None
+
             risk = entry_max - stop_loss
             if risk <= 0:
                 return None
@@ -376,6 +426,7 @@ class SignalEngine:
             rr = (tp1 - entry_max) / risk
 
             if pd.notna(resistance):
+                resistance = float(resistance)
                 if resistance <= entry_max:
                     return None
                 if resistance < tp1:
@@ -388,9 +439,17 @@ class SignalEngine:
 
             stop_candidates = [close + atr * 1.2]
             if pd.notna(resistance):
-                stop_candidates.append(resistance + atr * 0.15)
+                stop_candidates.append(float(resistance) + atr * 0.15)
 
             stop_loss = max(stop_candidates)
+
+            # stop обязательно выше верхней границы входа с буфером
+            min_allowed_stop = entry_max + stop_buffer
+            stop_loss = max(stop_loss, min_allowed_stop)
+
+            if stop_loss <= entry_max:
+                return None
+
             risk = stop_loss - entry_min
             if risk <= 0:
                 return None
@@ -402,6 +461,7 @@ class SignalEngine:
             rr = (entry_min - tp1) / risk
 
             if pd.notna(support):
+                support = float(support)
                 if support >= entry_min:
                     return None
                 if support > tp1:
