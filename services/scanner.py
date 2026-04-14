@@ -9,6 +9,7 @@ from aiogram import Bot
 from config import Config
 from services.market_data import BinanceFuturesClient
 from services.news_guard import NewsGuard
+from services.paper_trader import PaperTrader
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
@@ -31,6 +32,7 @@ class MarketScanner:
         self.state = StateStore(Config.STATE_FILE)
         self.signal_log = SignalLogStore()
         self.trade_tracker = TradeTracker()
+        self.paper = PaperTrader(start_balance=10000.0, risk_per_trade=0.01)
         self._scan_lock = asyncio.Lock()
 
         self.last_cycle_info = {
@@ -101,6 +103,7 @@ class MarketScanner:
             "tp2": signal.tp2,
             "tp3": signal.tp3,
             "score": signal.score,
+            "signal_type": getattr(signal, "signal_type", "UNKNOWN"),
             "saved_at": datetime.utcnow().isoformat(),
         }
         self.state.set_last_signal(key, payload)
@@ -116,6 +119,7 @@ class MarketScanner:
             "tp2": signal.tp2,
             "tp3": signal.tp3,
             "score": signal.score,
+            "signal_type": getattr(signal, "signal_type", "UNKNOWN"),
             "reasons": signal.reasons,
             "diagnostics": signal.diagnostics,
         }
@@ -172,6 +176,7 @@ class MarketScanner:
             "scan_interval": Config.SCAN_INTERVAL_SECONDS,
             "open_signals": len(self.get_open_signals()),
             "last_cycle": self.last_cycle_info,
+            "paper_stats": self.paper.stats(),
         }
 
     async def _send_closed_signal_notifications(self, bot: Bot):
@@ -258,6 +263,7 @@ class MarketScanner:
         add("RR", "rr")
         add("ResGap", "resistance_gap")
         add("SupGap", "support_gap")
+        add("Setup", "setup_type")
 
         return " | " + ", ".join(parts) if parts else ""
 
@@ -272,6 +278,42 @@ class MarketScanner:
 
         logger.info("Использую резервный список пар из config.py")
         return Config.DEFAULT_SYMBOLS
+
+    def _log_paper_stats(self):
+        stats = self.paper.stats()
+        logger.info(
+            "[PAPER STATS] "
+            f"balance={stats['balance']}$ | "
+            f"pnl={stats['pnl_usdt']}$ | "
+            f"R={stats['total_r']} | "
+            f"trades={stats['total_trades']} | "
+            f"open={stats['open_trades']} | "
+            f"closed={stats['closed_trades']} | "
+            f"wins={stats['wins']} | "
+            f"losses={stats['losses']} | "
+            f"winrate={stats['winrate']}%"
+        )
+
+    async def _update_paper_trades_from_symbol(self, symbol: str):
+        try:
+            ltf_df = await self.client.get_klines(symbol, Config.LTF_INTERVAL, 5)
+            if len(ltf_df) < 2:
+                return
+
+            last_closed = ltf_df.iloc[-2]
+            high = float(last_closed["high"])
+            low = float(last_closed["low"])
+
+            closed_now = self.paper.update_symbol_price(symbol, high, low)
+
+            for trade in closed_now:
+                logger.info(
+                    f"[PAPER CLOSED] {trade.symbol} {trade.direction} {trade.close_reason} | "
+                    f"type={trade.signal_type} | result={trade.result_usdt}$ | R={trade.result_r}"
+                )
+
+        except Exception as error:
+            logger.exception(f"[PAPER UPDATE ERROR] {symbol} | {error}")
 
     async def scan_market(self, bot: Bot, send_to_telegram: bool = True) -> List[SignalCheckResult]:
         async with self._scan_lock:
@@ -308,6 +350,7 @@ class MarketScanner:
                     )
 
                 logger.info(f"[NEWS BLOCK] {news_decision.reason}")
+                self._log_paper_stats()
                 return []
 
             symbols = await self._load_symbols_for_scan()
@@ -330,6 +373,8 @@ class MarketScanner:
 
             for symbol in symbols:
                 try:
+                    await self._update_paper_trades_from_symbol(symbol)
+
                     logger.info(f"Проверяю {symbol}")
 
                     htf_df = await self.client.get_klines(symbol, Config.HTF_INTERVAL, Config.KLINES_LIMIT)
@@ -347,19 +392,11 @@ class MarketScanner:
                             result.signal.score = round(result.signal.score - 0.7, 1)
                             result.signal.reasons.append("news guard: bullish headlines reduce SHORT confidence")
 
-                        if result.signal.score < Config.MIN_SCORE:
-                            result = SignalCheckResult(
-                                symbol=result.symbol,
-                                signal=None,
-                                skip_reason="news guard lowered score below threshold",
-                                diagnostics=result.diagnostics,
-                            )
-
                     results.append(result)
 
                     if result.signal:
                         logger.info(
-                            f"[SIGNAL] {symbol} {result.signal.direction} | "
+                            f"[SIGNAL] {symbol} {result.signal.direction} {result.signal.signal_type} | "
                             f"score={result.signal.score}"
                             f"{self._format_diag(result.signal.diagnostics)}"
                         )
@@ -375,7 +412,13 @@ class MarketScanner:
                     skip_counter["internal analysis error"] += 1
 
             good_signals = [r.signal for r in results if r.signal is not None]
-            good_signals.sort(key=lambda s: s.score, reverse=True)
+            good_signals.sort(
+                key=lambda s: (
+                    1 if getattr(s, "signal_type", "SETUP") == "STRONG" else 0,
+                    s.score,
+                ),
+                reverse=True,
+            )
 
             final_signals = []
             for signal in good_signals:
@@ -401,6 +444,16 @@ class MarketScanner:
                         self._remember_signal(signal)
                         self._log_signal_to_history(signal)
                         self._track_new_signal(signal)
+
+                        paper_trade = self.paper.open_trade(signal)
+                        if paper_trade:
+                            logger.info(
+                                f"[PAPER OPEN] {paper_trade.symbol} {paper_trade.direction} {paper_trade.signal_type} | "
+                                f"entry={round(paper_trade.entry_price, 6)} | "
+                                f"risk={round(paper_trade.risk_amount, 2)}$ | "
+                                f"size={round(paper_trade.size, 2)}"
+                            )
+
                         logger.info(f"Сигнал отправлен: {signal.symbol}")
                     except Exception as error:
                         logger.exception(f"Ошибка отправки сигнала {signal.symbol}: {error}")
@@ -438,4 +491,5 @@ class MarketScanner:
             if not top_signals:
                 logger.info("Сильных новых сигналов не найдено.")
 
+            self._log_paper_stats()
             return results
