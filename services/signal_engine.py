@@ -13,6 +13,7 @@ from services.indicators import (
     add_support_resistance,
     atr_ratio,
 )
+from services.structure_engine import StructureEngine
 
 
 @dataclass
@@ -28,7 +29,7 @@ class Signal:
     score: float
     reasons: list[str]
     diagnostics: dict
-    signal_type: str  # STRONG / SETUP
+    signal_type: str
 
 
 @dataclass
@@ -40,6 +41,9 @@ class SignalCheckResult:
 
 
 class SignalEngine:
+    def __init__(self):
+        self.structure_engine = StructureEngine()
+
     def prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
@@ -73,20 +77,12 @@ class SignalEngine:
 
         resistance_gap = None
         support_gap = None
-        dist_ema20 = None
-        dist_ema50 = None
 
         if pd.notna(ltf_last["resistance"]) and ltf_last["close"] != 0:
             resistance_gap = (ltf_last["resistance"] - ltf_last["close"]) / ltf_last["close"]
 
         if pd.notna(ltf_last["support"]) and ltf_last["close"] != 0:
             support_gap = (ltf_last["close"] - ltf_last["support"]) / ltf_last["close"]
-
-        if pd.notna(ltf_last["ema20"]) and ltf_last["close"] != 0:
-            dist_ema20 = abs(ltf_last["close"] - ltf_last["ema20"]) / ltf_last["close"]
-
-        if pd.notna(ltf_last["ema50"]) and ltf_last["close"] != 0:
-            dist_ema50 = abs(ltf_last["close"] - ltf_last["ema50"]) / ltf_last["close"]
 
         return {
             "htf_adx": round(float(htf_last["adx"]), 3) if pd.notna(htf_last["adx"]) else None,
@@ -97,139 +93,29 @@ class SignalEngine:
             "ltf_quote_volume_ratio": round(float(ltf_last["quote_volume_ratio"]), 3) if pd.notna(ltf_last["quote_volume_ratio"]) else None,
             "resistance_gap": round(float(resistance_gap), 6) if resistance_gap is not None else None,
             "support_gap": round(float(support_gap), 6) if support_gap is not None else None,
-            "dist_ema20": round(float(dist_ema20), 6) if dist_ema20 is not None else None,
-            "dist_ema50": round(float(dist_ema50), 6) if dist_ema50 is not None else None,
-            "ltf_close": round(float(ltf_last["close"]), 6) if pd.notna(ltf_last["close"]) else None,
         }
 
-    def detect_trend(self, htf_df: pd.DataFrame) -> str:
-        last = self._closed(htf_df)
+    def _check_structure_setup(
+        self,
+        htf_df: pd.DataFrame,
+        mtf_df: pd.DataFrame,
+        ltf_df: pd.DataFrame,
+    ):
+        return self.structure_engine.detect_setup(htf_df, mtf_df, ltf_df)
 
-        if (
-            last["close"] > last["ema_slow"]
-            and last["ema_fast"] > last["ema_slow"]
-            and last["adx"] >= Config.MIN_ADX_4H
-        ):
-            return "LONG"
-
-        if (
-            last["close"] < last["ema_slow"]
-            and last["ema_fast"] < last["ema_slow"]
-            and last["adx"] >= Config.MIN_ADX_4H
-        ):
-            return "SHORT"
-
-        return "NONE"
-
-    def _check_mtf_alignment(self, direction: str, mtf_df: pd.DataFrame) -> tuple[bool, str]:
-        last = self._closed(mtf_df)
-
-        if direction == "LONG":
-            if last["close"] <= last["ema50"]:
-                return False, "1h не подтверждает LONG: цена ниже EMA50"
-            if last["adx"] < Config.MIN_ADX_1H:
-                return False, "1h не подтверждает LONG: слабый ADX"
-            return True, ""
-
-        if last["close"] >= last["ema50"]:
-            return False, "1h не подтверждает SHORT: цена выше EMA50"
-        if last["adx"] < Config.MIN_ADX_1H:
-            return False, "1h не подтверждает SHORT: слабый ADX"
-        return True, ""
-
-    def _check_quote_volume(self, ltf_df: pd.DataFrame) -> tuple[bool, str]:
-        last = self._closed(ltf_df)
-
-        if pd.isna(last["quote_volume_avg_20"]) or last["quote_volume_avg_20"] <= 0:
-            return False, "15m недостаточно данных по денежному объёму"
-
-        volume_ratio = last["quote_volume_ratio"]
-
-        if pd.isna(volume_ratio):
-            return False, "15m не удалось рассчитать денежный объём"
-
-        if volume_ratio < Config.MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO:
-            return False, "15m денежный объём слишком слабый"
-
-        return True, ""
-
-    def _check_not_chasing(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
-        last = self._closed(ltf_df)
-
-        dist_ema20 = abs(last["close"] - last["ema20"]) / last["close"]
-        dist_ema50 = abs(last["close"] - last["ema50"]) / last["close"]
-
-        if direction == "LONG":
-            if last["rsi"] > Config.LONG_MAX_RSI_ENTRY:
-                return False, "anti-fomo: LONG перегрет по RSI"
-
-            if dist_ema20 > Config.MAX_CHASE_DISTANCE_FROM_EMA20 and dist_ema50 > Config.MAX_CHASE_DISTANCE_FROM_EMA50:
-                return False, "anti-fomo: LONG слишком далеко от EMA20/EMA50"
-
-            if pd.notna(last["resistance"]):
-                gap_to_resistance = (last["resistance"] - last["close"]) / last["close"]
-                if gap_to_resistance <= 0:
-                    return False, "цена уже в сопротивлении"
-                if gap_to_resistance < Config.HARD_MIN_RESISTANCE_GAP:
-                    return False, "anti-fomo: слишком близкое сопротивление сверху"
-
-            return True, ""
-
-        if last["rsi"] < Config.SHORT_MIN_RSI_ENTRY:
-            return False, "anti-fomo: SHORT перегрет по RSI"
-
-        if dist_ema20 > Config.MAX_CHASE_DISTANCE_FROM_EMA20 and dist_ema50 > Config.MAX_CHASE_DISTANCE_FROM_EMA50:
-            return False, "anti-fomo: SHORT слишком далеко от EMA20/EMA50"
-
-        if pd.notna(last["support"]):
-            gap_to_support = (last["close"] - last["support"]) / last["close"]
-            if gap_to_support <= 0:
-                return False, "цена уже в поддержке"
-            if gap_to_support < Config.HARD_MIN_SUPPORT_GAP:
-                return False, "anti-fomo: слишком близкая поддержка снизу"
-
-        return True, ""
-
-    def _check_retest_zone(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
-        last = self._closed(ltf_df)
-
-        dist_ema20 = abs(last["close"] - last["ema20"]) / last["close"]
-        dist_ema50 = abs(last["close"] - last["ema50"]) / last["close"]
-
-        if dist_ema20 > Config.MAX_DISTANCE_FROM_EMA20 and dist_ema50 > Config.MAX_DISTANCE_FROM_EMA50:
-            return False, "цена слишком далеко от EMA20/EMA50, вход поздний"
-
-        if direction == "LONG":
-            if last["close"] < last["ema20"] and last["close"] < last["ema50"]:
-                return False, "15m не удержал зону EMA20/EMA50 для LONG"
-            return True, ""
-
-        if last["close"] > last["ema20"] and last["close"] > last["ema50"]:
-            return False, "15m не удержал зону EMA20/EMA50 для SHORT"
-        return True, ""
-
-    def _check_ltf_quality(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
+    def _check_confirmation(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
         last = self._closed(ltf_df)
         prev = self._prev_closed(ltf_df)
 
         if last["atr_ratio"] < Config.MIN_ATR_RATIO_15M:
-            return False, "15m слишком вялый: ATR ratio ниже минимума"
+            return False, "15m слишком вялый"
 
-        anti_fomo_ok, anti_fomo_reason = self._check_not_chasing(direction, ltf_df)
-        if not anti_fomo_ok:
-            return False, anti_fomo_reason
-
-        zone_ok, zone_reason = self._check_retest_zone(direction, ltf_df)
-        if not zone_ok:
-            return False, zone_reason
-
-        volume_ok, volume_reason = self._check_quote_volume(ltf_df)
-        if not volume_ok:
-            return False, volume_reason
+        if last["quote_volume_ratio"] < Config.MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO:
+            return False, "15m денежный объём слишком слабый"
 
         if direction == "LONG":
-            if not (46 <= last["rsi"] <= 68):
-                return False, "15m RSI вне зоны качественного LONG-входа"
+            if last["rsi"] > Config.LONG_MAX_RSI_ENTRY:
+                return False, "LONG перегрет по RSI"
 
             macd_ok = (
                 last["macd_hist"] > 0
@@ -237,12 +123,12 @@ class SignalEngine:
                 or last["macd_hist"] > prev["macd_hist"]
             )
             if not macd_ok:
-                return False, "15m MACD не подтверждает LONG"
+                return False, "MACD не подтверждает LONG"
 
             return True, ""
 
-        if not (32 <= last["rsi"] <= 54):
-            return False, "15m RSI вне зоны качественного SHORT-входа"
+        if last["rsi"] < Config.SHORT_MIN_RSI_ENTRY:
+            return False, "SHORT перегрет по RSI"
 
         macd_ok = (
             last["macd_hist"] < 0
@@ -250,12 +136,13 @@ class SignalEngine:
             or last["macd_hist"] < prev["macd_hist"]
         )
         if not macd_ok:
-            return False, "15m MACD не подтверждает SHORT"
+            return False, "MACD не подтверждает SHORT"
 
         return True, ""
 
     def calculate_score(
         self,
+        setup_type: str,
         direction: str,
         htf_df: pd.DataFrame,
         mtf_df: pd.DataFrame,
@@ -269,119 +156,111 @@ class SignalEngine:
         ltf_last = self._closed(ltf_df)
         ltf_prev = self._prev_closed(ltf_df)
 
-        volume_ratio = ltf_last["quote_volume_ratio"]
-
         if direction == "LONG":
             score += 2.0
-            reasons.append("тренд 4h восходящий")
+            reasons.append("структура рынка смотрит вверх")
+
+            if setup_type == "PULLBACK_CONTINUATION":
+                score += 1.5
+                reasons.append("сетап: continuation after pullback")
+
+            if setup_type == "BREAKOUT_RETEST":
+                score += 1.3
+                reasons.append("сетап: breakout + retest вверх")
 
             if htf_last["ema_fast"] > htf_last["ema_slow"]:
-                score += 1.0
+                score += 0.8
                 reasons.append("EMA 50 выше EMA 200 на 4h")
 
-            if htf_last["adx"] >= Config.MIN_ADX_4H + 4:
-                score += 0.8
-                reasons.append("4h ADX показывает силу тренда")
-
-            if mtf_last["close"] > mtf_last["ema50"]:
-                score += 1.0
-                reasons.append("1h подтверждает направление")
-
-            if mtf_last["adx"] >= Config.MIN_ADX_1H + 3:
+            if htf_last["adx"] >= Config.MIN_ADX_4H:
                 score += 0.7
-                reasons.append("1h ADX подтверждает импульс")
+                reasons.append("4h ADX подтверждает силу тренда")
+
+            if mtf_last["adx"] >= Config.MIN_ADX_1H:
+                score += 0.6
+                reasons.append("1h ADX поддерживает движение")
 
             if ltf_last["close"] >= ltf_last["ema20"] or ltf_last["close"] >= ltf_last["ema50"]:
-                score += 0.8
-                reasons.append("15m держится над зоной EMA20/EMA50")
+                score += 0.7
+                reasons.append("15m удерживает рабочую зону")
 
-            if 49 <= ltf_last["rsi"] <= 58:
-                score += 1.0
-                reasons.append("RSI на 15m в рабочей зоне роста без перегрева")
-            elif 58 < ltf_last["rsi"] <= Config.LONG_MAX_RSI_ENTRY:
-                score += 0.4
-                reasons.append("RSI на 15m ближе к перегреву, но ещё допустим")
+            if 48 <= ltf_last["rsi"] <= 60:
+                score += 0.9
+                reasons.append("RSI в нормальной зоне LONG")
+            elif 60 < ltf_last["rsi"] <= Config.LONG_MAX_RSI_ENTRY:
+                score += 0.3
+                reasons.append("RSI выше, но ещё допустим")
 
             if (
                 ltf_last["macd_hist"] > 0
                 or ltf_last["macd"] > ltf_last["macd_signal"]
                 or ltf_last["macd_hist"] > ltf_prev["macd_hist"]
             ):
-                score += 0.9
-                reasons.append("MACD на 15m поддерживает LONG")
+                score += 0.8
+                reasons.append("MACD подтверждает LONG")
 
-            if pd.notna(volume_ratio):
-                if volume_ratio >= 1.15:
-                    score += 1.1
-                    reasons.append("денежный объём на 15m выше среднего")
-                elif volume_ratio >= 1.00:
-                    score += 0.8
-                    reasons.append("денежный объём на 15m нормальный")
-                elif volume_ratio >= 0.85:
-                    score += 0.4
-                    reasons.append("денежный объём на 15m немного ниже среднего, но допустим")
+            if ltf_last["quote_volume_ratio"] >= 1.0:
+                score += 0.8
+                reasons.append("объём на 15m не слабый")
 
             if pd.notna(ltf_last["support"]):
                 gap = (ltf_last["close"] - ltf_last["support"]) / ltf_last["close"]
-                if 0 < gap <= 0.015:
-                    score += 0.8
-                    reasons.append("рядом swing-поддержка")
+                if 0 < gap <= 0.018:
+                    score += 0.6
+                    reasons.append("рядом поддержка")
 
         else:
             score += 2.0
-            reasons.append("тренд 4h нисходящий")
+            reasons.append("структура рынка смотрит вниз")
+
+            if setup_type == "PULLBACK_CONTINUATION":
+                score += 1.5
+                reasons.append("сетап: continuation after pullback")
+
+            if setup_type == "BREAKOUT_RETEST":
+                score += 1.3
+                reasons.append("сетап: breakout + retest вниз")
 
             if htf_last["ema_fast"] < htf_last["ema_slow"]:
-                score += 1.0
+                score += 0.8
                 reasons.append("EMA 50 ниже EMA 200 на 4h")
 
-            if htf_last["adx"] >= Config.MIN_ADX_4H + 4:
-                score += 0.8
-                reasons.append("4h ADX показывает силу тренда")
-
-            if mtf_last["close"] < mtf_last["ema50"]:
-                score += 1.0
-                reasons.append("1h подтверждает направление")
-
-            if mtf_last["adx"] >= Config.MIN_ADX_1H + 3:
+            if htf_last["adx"] >= Config.MIN_ADX_4H:
                 score += 0.7
-                reasons.append("1h ADX подтверждает импульс")
+                reasons.append("4h ADX подтверждает силу тренда")
+
+            if mtf_last["adx"] >= Config.MIN_ADX_1H:
+                score += 0.6
+                reasons.append("1h ADX поддерживает движение")
 
             if ltf_last["close"] <= ltf_last["ema20"] or ltf_last["close"] <= ltf_last["ema50"]:
-                score += 0.8
-                reasons.append("15m держится под зоной EMA20/EMA50")
+                score += 0.7
+                reasons.append("15m удерживает рабочую зону")
 
-            if Config.SHORT_MIN_RSI_ENTRY <= ltf_last["rsi"] <= 50:
-                score += 1.0
-                reasons.append("RSI на 15m в рабочей зоне снижения без перегрева")
-            elif 50 < ltf_last["rsi"] <= 54:
-                score += 0.4
-                reasons.append("RSI на 15m хуже для SHORT, но ещё допустим")
+            if Config.SHORT_MIN_RSI_ENTRY <= ltf_last["rsi"] <= 52:
+                score += 0.9
+                reasons.append("RSI в нормальной зоне SHORT")
+            elif 52 < ltf_last["rsi"] <= 56:
+                score += 0.3
+                reasons.append("RSI чуть слабее для SHORT, но допустим")
 
             if (
                 ltf_last["macd_hist"] < 0
                 or ltf_last["macd"] < ltf_last["macd_signal"]
                 or ltf_last["macd_hist"] < ltf_prev["macd_hist"]
             ):
-                score += 0.9
-                reasons.append("MACD на 15m поддерживает SHORT")
+                score += 0.8
+                reasons.append("MACD подтверждает SHORT")
 
-            if pd.notna(volume_ratio):
-                if volume_ratio >= 1.15:
-                    score += 1.1
-                    reasons.append("денежный объём на 15m выше среднего")
-                elif volume_ratio >= 1.00:
-                    score += 0.8
-                    reasons.append("денежный объём на 15m нормальный")
-                elif volume_ratio >= 0.85:
-                    score += 0.4
-                    reasons.append("денежный объём на 15m немного ниже среднего, но допустим")
+            if ltf_last["quote_volume_ratio"] >= 1.0:
+                score += 0.8
+                reasons.append("объём на 15m не слабый")
 
             if pd.notna(ltf_last["resistance"]):
                 gap = (ltf_last["resistance"] - ltf_last["close"]) / ltf_last["close"]
-                if 0 < gap <= 0.015:
-                    score += 0.8
-                    reasons.append("рядом swing-сопротивление")
+                if 0 < gap <= 0.018:
+                    score += 0.6
+                    reasons.append("рядом сопротивление")
 
         return round(score, 1), reasons
 
@@ -409,9 +288,7 @@ class SignalEngine:
                 stop_candidates.append(float(support) - atr * 0.15)
 
             stop_loss = min(stop_candidates)
-
-            max_allowed_stop = entry_min - stop_buffer
-            stop_loss = min(stop_loss, max_allowed_stop)
+            stop_loss = min(stop_loss, entry_min - stop_buffer)
 
             if stop_loss >= entry_min:
                 return None
@@ -420,9 +297,9 @@ class SignalEngine:
             if risk <= 0:
                 return None
 
-            tp1 = entry_max + risk * 1.8
-            tp2 = entry_max + risk * 2.6
-            tp3 = entry_max + risk * 3.5
+            tp1 = entry_max + risk * 1.6
+            tp2 = entry_max + risk * 2.3
+            tp3 = entry_max + risk * 3.0
 
             rr = (tp1 - entry_max) / risk
 
@@ -430,8 +307,6 @@ class SignalEngine:
                 resistance = float(resistance)
                 if resistance <= entry_max:
                     return None
-                if resistance < tp1:
-                    rr = min(rr, (resistance - entry_max) / risk)
 
         else:
             anchor = max(close, ema20, ema50)
@@ -443,9 +318,7 @@ class SignalEngine:
                 stop_candidates.append(float(resistance) + atr * 0.15)
 
             stop_loss = max(stop_candidates)
-
-            min_allowed_stop = entry_max + stop_buffer
-            stop_loss = max(stop_loss, min_allowed_stop)
+            stop_loss = max(stop_loss, entry_max + stop_buffer)
 
             if stop_loss <= entry_max:
                 return None
@@ -454,9 +327,9 @@ class SignalEngine:
             if risk <= 0:
                 return None
 
-            tp1 = entry_min - risk * 1.8
-            tp2 = entry_min - risk * 2.6
-            tp3 = entry_min - risk * 3.5
+            tp1 = entry_min - risk * 1.6
+            tp2 = entry_min - risk * 2.3
+            tp3 = entry_min - risk * 3.0
 
             rr = (entry_min - tp1) / risk
 
@@ -464,8 +337,6 @@ class SignalEngine:
                 support = float(support)
                 if support >= entry_min:
                     return None
-                if support > tp1:
-                    rr = min(rr, (entry_min - support) / risk)
 
         return {
             "entry_min": entry_min,
@@ -507,36 +378,34 @@ class SignalEngine:
 
         diagnostics = self._build_diagnostics(htf_df, mtf_df, ltf_df)
 
-        direction = self.detect_trend(htf_df)
-        if direction == "NONE":
+        setup = self._check_structure_setup(htf_df, mtf_df, ltf_df)
+        if setup.setup_type == "NONE":
             return SignalCheckResult(
                 symbol=symbol,
                 signal=None,
-                skip_reason="нет сильного тренда на 4h",
+                skip_reason=setup.reason,
                 diagnostics=diagnostics,
             )
 
-        mtf_ok, mtf_reason = self._check_mtf_alignment(direction, mtf_df)
-        if not mtf_ok:
+        confirm_ok, confirm_reason = self._check_confirmation(setup.direction, ltf_df)
+        if not confirm_ok:
             return SignalCheckResult(
                 symbol=symbol,
                 signal=None,
-                skip_reason=mtf_reason,
+                skip_reason=confirm_reason,
                 diagnostics=diagnostics,
             )
 
-        ltf_ok, ltf_reason = self._check_ltf_quality(direction, ltf_df)
-        if not ltf_ok:
-            return SignalCheckResult(
-                symbol=symbol,
-                signal=None,
-                skip_reason=ltf_reason,
-                diagnostics=diagnostics,
-            )
+        score, reasons = self.calculate_score(
+            setup.setup_type,
+            setup.direction,
+            htf_df,
+            mtf_df,
+            ltf_df,
+        )
+        reasons.insert(0, setup.reason)
 
-        score, reasons = self.calculate_score(direction, htf_df, mtf_df, ltf_df)
-        levels = self.build_trade_levels(direction, ltf_df)
-
+        levels = self.build_trade_levels(setup.direction, ltf_df)
         if not levels:
             return SignalCheckResult(
                 symbol=symbol,
@@ -547,6 +416,7 @@ class SignalEngine:
 
         diagnostics["rr"] = round(float(levels["rr"]), 3)
         diagnostics["score"] = round(float(score), 3)
+        diagnostics["setup_type"] = setup.setup_type
 
         signal_type = self.classify_signal(score, levels["rr"])
         if not signal_type:
@@ -562,11 +432,11 @@ class SignalEngine:
             )
 
         if signal_type == "SETUP":
-            reasons = reasons + ["сетап ниже уровня STRONG, нужен более аккуратный риск"]
+            reasons.append("это SETUP-сигнал: риск лучше держать аккуратнее")
 
         signal = Signal(
             symbol=symbol,
-            direction=direction,
+            direction=setup.direction,
             entry_min=round(levels["entry_min"], 4),
             entry_max=round(levels["entry_max"], 4),
             stop_loss=round(levels["stop_loss"], 4),
