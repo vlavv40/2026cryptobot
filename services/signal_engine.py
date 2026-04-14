@@ -28,6 +28,7 @@ class Signal:
     score: float
     reasons: list[str]
     diagnostics: dict
+    signal_type: str  # STRONG / SETUP
 
 
 @dataclass
@@ -161,6 +162,7 @@ class SignalEngine:
         if direction == "LONG":
             if last["rsi"] > Config.LONG_MAX_RSI_ENTRY:
                 return False, "anti-fomo: LONG перегрет по RSI"
+
             if dist_ema20 > Config.MAX_CHASE_DISTANCE_FROM_EMA20 and dist_ema50 > Config.MAX_CHASE_DISTANCE_FROM_EMA50:
                 return False, "anti-fomo: LONG слишком далеко от EMA20/EMA50"
 
@@ -408,7 +410,6 @@ class SignalEngine:
 
             stop_loss = min(stop_candidates)
 
-            # stop обязательно ниже нижней границы входа с буфером
             max_allowed_stop = entry_min - stop_buffer
             stop_loss = min(stop_loss, max_allowed_stop)
 
@@ -443,7 +444,6 @@ class SignalEngine:
 
             stop_loss = max(stop_candidates)
 
-            # stop обязательно выше верхней границы входа с буфером
             min_allowed_stop = entry_max + stop_buffer
             stop_loss = max(stop_loss, min_allowed_stop)
 
@@ -476,6 +476,15 @@ class SignalEngine:
             "tp3": tp3,
             "rr": rr,
         }
+
+    def classify_signal(self, score: float, rr: float) -> Optional[str]:
+        if score >= Config.STRONG_MIN_SCORE and rr >= Config.STRONG_MIN_RR:
+            return "STRONG"
+
+        if score >= Config.SETUP_MIN_SCORE and rr >= Config.SETUP_MIN_RR:
+            return "SETUP"
+
+        return None
 
     def analyze_symbol(
         self,
@@ -526,16 +535,8 @@ class SignalEngine:
             )
 
         score, reasons = self.calculate_score(direction, htf_df, mtf_df, ltf_df)
-        if score < Config.MIN_SCORE:
-            diagnostics["score"] = round(score, 3)
-            return SignalCheckResult(
-                symbol=symbol,
-                signal=None,
-                skip_reason=f"слабый score: {score} < {Config.MIN_SCORE}",
-                diagnostics=diagnostics,
-            )
-
         levels = self.build_trade_levels(direction, ltf_df)
+
         if not levels:
             return SignalCheckResult(
                 symbol=symbol,
@@ -545,14 +546,23 @@ class SignalEngine:
             )
 
         diagnostics["rr"] = round(float(levels["rr"]), 3)
+        diagnostics["score"] = round(float(score), 3)
 
-        if levels["rr"] + 1e-9 < Config.MIN_RR:
+        signal_type = self.classify_signal(score, levels["rr"])
+        if not signal_type:
             return SignalCheckResult(
                 symbol=symbol,
                 signal=None,
-                skip_reason=f"слабое risk/reward: {levels['rr']:.3f} < {Config.MIN_RR}",
+                skip_reason=(
+                    f"слабый сигнал: score={score} / rr={levels['rr']:.3f} "
+                    f"(strong: {Config.STRONG_MIN_SCORE}/{Config.STRONG_MIN_RR}, "
+                    f"setup: {Config.SETUP_MIN_SCORE}/{Config.SETUP_MIN_RR})"
+                ),
                 diagnostics=diagnostics,
             )
+
+        if signal_type == "SETUP":
+            reasons = reasons + ["сетап ниже уровня STRONG, нужен более аккуратный риск"]
 
         signal = Signal(
             symbol=symbol,
@@ -566,6 +576,7 @@ class SignalEngine:
             score=score,
             reasons=reasons,
             diagnostics=diagnostics,
+            signal_type=signal_type,
         )
 
         return SignalCheckResult(

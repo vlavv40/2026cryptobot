@@ -10,11 +10,19 @@ def _fmt_price(value: float) -> str:
 
 
 def format_signal(signal) -> str:
-    reasons = signal.reasons[:5]
+    reasons = signal.reasons[:6]
     reasons_text = "\n".join(f"• {reason}" for reason in reasons)
 
+    header = "🔴 STRONG SIGNAL"
+    if getattr(signal, "signal_type", "STRONG") == "SETUP":
+        header = "🟡 SETUP SIGNAL"
+
+    risk_hint = "Размер позиции: стандартный"
+    if getattr(signal, "signal_type", "STRONG") == "SETUP":
+        risk_hint = "Размер позиции: уменьшенный / смотреть руками"
+
     return (
-        f"🚨 СИГНАЛ\n\n"
+        f"{header}\n\n"
         f"#{signal.symbol}\n"
         f"Направление: {signal.direction}\n"
         f"Вход: {_fmt_price(signal.entry_min)} - {_fmt_price(signal.entry_max)}\n"
@@ -22,7 +30,9 @@ def format_signal(signal) -> str:
         f"TP1: {_fmt_price(signal.tp1)}\n"
         f"TP2: {_fmt_price(signal.tp2)}\n"
         f"TP3: {_fmt_price(signal.tp3)}\n"
-        f"Score: {signal.score}/10\n\n"
+        f"Score: {signal.score}/10\n"
+        f"Тип: {getattr(signal, 'signal_type', 'STRONG')}\n"
+        f"{risk_hint}\n\n"
         f"Причины:\n{reasons_text}"
     )
 

@@ -82,20 +82,26 @@ class Config:
     LONG_MAX_RSI_ENTRY = float(os.getenv("LONG_MAX_RSI_ENTRY", "62"))
     SHORT_MIN_RSI_ENTRY = float(os.getenv("SHORT_MIN_RSI_ENTRY", "38"))
 
-    # Насколько цена может уйти от EMA20/EMA50, чтобы вход ещё считался нормальным
     MAX_CHASE_DISTANCE_FROM_EMA20 = float(os.getenv("MAX_CHASE_DISTANCE_FROM_EMA20", "0.012"))
     MAX_CHASE_DISTANCE_FROM_EMA50 = float(os.getenv("MAX_CHASE_DISTANCE_FROM_EMA50", "0.020"))
 
-    # Минимальный отступ стопа от зоны входа
     MIN_STOP_BUFFER_ATR = float(os.getenv("MIN_STOP_BUFFER_ATR", "0.15"))
 
-    # Если до сопротивления/поддержки слишком близко — не входим
     HARD_MIN_RESISTANCE_GAP = float(os.getenv("HARD_MIN_RESISTANCE_GAP", "0.010"))
     HARD_MIN_SUPPORT_GAP = float(os.getenv("HARD_MIN_SUPPORT_GAP", "0.010"))
 
+    # Dual-signal system
+    STRONG_MIN_SCORE = float(os.getenv("STRONG_MIN_SCORE", "7.0"))
+    STRONG_MIN_RR = float(os.getenv("STRONG_MIN_RR", "1.8"))
+
+    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.8"))
+    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.3"))
+
+    # Для старого кода /mode
+    MIN_SCORE = STRONG_MIN_SCORE
+    MIN_RR = STRONG_MIN_RR
+
     if STRATEGY_MODE == "SNIPER":
-        MIN_SCORE = 7.8
-        MIN_RR = 2.0
         MIN_ADX_4H = 20.0
         MIN_ADX_1H = 16.0
         MIN_ATR_RATIO_15M = 0.0018
@@ -105,8 +111,6 @@ class Config:
         MIN_SUPPORT_GAP = 0.010
         MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO = 0.85
     else:
-        MIN_SCORE = 7.0
-        MIN_RR = 1.8
         MIN_ADX_4H = 18.0
         MIN_ADX_1H = 14.0
         MIN_ATR_RATIO_15M = 0.0016
