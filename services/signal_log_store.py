@@ -1,40 +1,34 @@
 import json
-from datetime import datetime
-from pathlib import Path
+
+from services.db import db
 
 
 class SignalLogStore:
-    def __init__(self, filepath: str = "signals_log.json"):
-        self.path = Path(filepath)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    async def add_signal(self, payload: dict):
+        assert db.pool is not None
+        async with db.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO signal_logs (payload) VALUES ($1::jsonb)",
+                json.dumps(payload, ensure_ascii=False),
+            )
 
-        if not self.path.exists():
-            self._save([])
+    async def get_last_signals(self, limit: int = 5) -> list[dict]:
+        assert db.pool is not None
+        async with db.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT payload
+                FROM signal_logs
+                ORDER BY id DESC
+                LIMIT $1
+                """,
+                limit,
+            )
 
-    def _load(self) -> list[dict]:
-        try:
-            with self.path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
-        except Exception:
-            pass
-        return []
-
-    def _save(self, data: list[dict]):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-    def add_signal(self, payload: dict):
-        data = self._load()
-        payload["saved_at"] = datetime.utcnow().isoformat()
-        data.append(payload)
-
-        # храним последние 200 сигналов
-        data = data[-200:]
-        self._save(data)
-
-    def get_last_signals(self, limit: int = 5) -> list[dict]:
-        data = self._load()
-        return list(reversed(data[-limit:]))
+        result = []
+        for row in rows:
+            payload = row["payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            result.append(dict(payload))
+        return result

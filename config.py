@@ -10,6 +10,8 @@ class Config:
     RAW_CHAT_IDS = os.getenv("CHAT_IDS", "")
     CHAT_IDS = [chat_id.strip() for chat_id in RAW_CHAT_IDS.split(",") if chat_id.strip()]
 
+    POSTGRES_URI = os.getenv("POSTGRES_URI", "")
+
     BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
 
     STRATEGY_MODE = os.getenv("STRATEGY_MODE", "BALANCED_PRO")
@@ -27,21 +29,9 @@ class Config:
     MAX_SYMBOLS_TO_SCAN = int(os.getenv("MAX_SYMBOLS_TO_SCAN", "15"))
 
     PRIORITY_SYMBOLS = [
-        "BTCUSDT",
-        "ETHUSDT",
-        "BNBUSDT",
-        "SOLUSDT",
-        "XRPUSDT",
-        "DOGEUSDT",
-        "ADAUSDT",
-        "AVAXUSDT",
-        "LINKUSDT",
-        "SUIUSDT",
-        "DOTUSDT",
-        "NEARUSDT",
-        "ARBUSDT",
-        "OPUSDT",
-        "ATOMUSDT",
+        "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+        "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
+        "DOTUSDT", "NEARUSDT", "ARBUSDT", "OPUSDT", "ATOMUSDT",
     ]
     DEFAULT_SYMBOLS = PRIORITY_SYMBOLS.copy()
 
@@ -57,10 +47,6 @@ class Config:
     MIN_24H_TRADES = 100_000
 
     SIGNAL_COOLDOWN_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "180"))
-
-    STATE_DIR = os.getenv("STATE_DIR", "").strip()
-    STATE_FILE = os.path.join(STATE_DIR, "bot_state.json") if STATE_DIR else "bot_state.json"
-
     SETUP_PRICE_TOLERANCE = 0.0035
 
     NEWS_GUARD_ENABLED = os.getenv("NEWS_GUARD_ENABLED", "false").lower() == "true"
@@ -78,7 +64,6 @@ class Config:
     SEND_CYCLE_MESSAGES = os.getenv("SEND_CYCLE_MESSAGES", "false").lower() == "true"
     SEND_NEWS_BLOCK_MESSAGE = os.getenv("SEND_NEWS_BLOCK_MESSAGE", "true").lower() == "true"
 
-    # Anti-FOMO
     LONG_MAX_RSI_ENTRY = float(os.getenv("LONG_MAX_RSI_ENTRY", "62"))
     SHORT_MIN_RSI_ENTRY = float(os.getenv("SHORT_MIN_RSI_ENTRY", "38"))
 
@@ -90,14 +75,12 @@ class Config:
     HARD_MIN_RESISTANCE_GAP = float(os.getenv("HARD_MIN_RESISTANCE_GAP", "0.010"))
     HARD_MIN_SUPPORT_GAP = float(os.getenv("HARD_MIN_SUPPORT_GAP", "0.010"))
 
-    # Dual-signal system
     STRONG_MIN_SCORE = float(os.getenv("STRONG_MIN_SCORE", "7.0"))
     STRONG_MIN_RR = float(os.getenv("STRONG_MIN_RR", "1.8"))
 
     SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.8"))
     SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.3"))
 
-    # Для старого кода /mode
     MIN_SCORE = STRONG_MIN_SCORE
     MIN_RR = STRONG_MIN_RR
 

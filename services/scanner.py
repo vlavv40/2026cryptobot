@@ -13,11 +13,7 @@ from services.paper_trader import PaperTrader
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
-from services.telegram_sender import (
-    format_result_message,
-    send_signal,
-    send_text_to_all,
-)
+from services.telegram_sender import format_result_message, send_signal, send_text_to_all
 from services.trade_tracker import TradeTracker
 from utils.logger import setup_logger
 
@@ -29,10 +25,10 @@ class MarketScanner:
         self.client = BinanceFuturesClient()
         self.engine = SignalEngine()
         self.news_guard = NewsGuard()
-        self.state = StateStore(Config.STATE_FILE)
+        self.state = StateStore()
         self.signal_log = SignalLogStore()
         self.trade_tracker = TradeTracker()
-        self.paper = PaperTrader(start_balance=10000.0, risk_per_trade=0.01)
+        self.paper = PaperTrader()
         self._scan_lock = asyncio.Lock()
 
         self.last_cycle_info = {
@@ -53,17 +49,17 @@ class MarketScanner:
     def _make_signal_key(self, symbol: str, direction: str) -> str:
         return f"{symbol}:{direction}"
 
-    def _is_on_cooldown(self, symbol: str, direction: str) -> bool:
+    async def _is_on_cooldown(self, symbol: str, direction: str) -> bool:
         key = self._make_cooldown_key(symbol, direction)
-        return self.state.get_cooldown(key) is not None
+        return await self.state.get_cooldown(key) is not None
 
-    def _set_cooldown(self, symbol: str, direction: str):
+    async def _set_cooldown(self, symbol: str, direction: str):
         key = self._make_cooldown_key(symbol, direction)
-        self.state.set_cooldown(key, Config.SIGNAL_COOLDOWN_MINUTES)
+        await self.state.set_cooldown(key, Config.SIGNAL_COOLDOWN_MINUTES)
 
-    def _same_setup(self, signal: Signal) -> bool:
+    async def _same_setup(self, signal: Signal) -> bool:
         key = self._make_signal_key(signal.symbol, signal.direction)
-        previous = self.state.get_last_signal(key)
+        previous = await self.state.get_last_signal(key)
 
         if not previous:
             return False
@@ -91,7 +87,7 @@ class MarketScanner:
         except Exception:
             return False
 
-    def _remember_signal(self, signal: Signal):
+    async def _remember_signal(self, signal: Signal):
         key = self._make_signal_key(signal.symbol, signal.direction)
         payload = {
             "symbol": signal.symbol,
@@ -106,9 +102,9 @@ class MarketScanner:
             "signal_type": getattr(signal, "signal_type", "UNKNOWN"),
             "saved_at": datetime.utcnow().isoformat(),
         }
-        self.state.set_last_signal(key, payload)
+        await self.state.set_last_signal(key, payload)
 
-    def _log_signal_to_history(self, signal: Signal):
+    async def _log_signal_to_history(self, signal: Signal):
         payload = {
             "symbol": signal.symbol,
             "direction": signal.direction,
@@ -123,9 +119,9 @@ class MarketScanner:
             "reasons": signal.reasons,
             "diagnostics": signal.diagnostics,
         }
-        self.signal_log.add_signal(payload)
+        await self.signal_log.add_signal(payload)
 
-    def _track_new_signal(self, signal: Signal):
+    async def _track_new_signal(self, signal: Signal):
         payload = {
             "id": str(uuid4()),
             "symbol": signal.symbol,
@@ -138,108 +134,110 @@ class MarketScanner:
             "tp3": signal.tp3,
             "score": signal.score,
         }
-        self.trade_tracker.add_signal(payload)
+        await self.trade_tracker.add_signal(payload)
 
-    def get_last_logged_signals(self, limit: int = 5) -> list[dict]:
-        return self.signal_log.get_last_signals(limit=limit)
+    async def get_last_logged_signals(self, limit: int = 5) -> list[dict]:
+        return await self.signal_log.get_last_signals(limit=limit)
 
-    def get_open_signals(self) -> list[dict]:
-        return self.trade_tracker.get_open_signals()
+    async def get_open_signals(self) -> list[dict]:
+        return await self.trade_tracker.get_open_signals()
 
-    def get_stats(self) -> dict:
-        return self.trade_tracker.get_stats()
+    async def get_stats(self) -> dict:
+        return await self.trade_tracker.get_stats()
 
-    def get_pair_stats(self) -> list[dict]:
-        return self.trade_tracker.get_pair_stats()
+    async def get_pair_stats(self) -> list[dict]:
+        return await self.trade_tracker.get_pair_stats()
 
-    def get_best_pairs(self, min_closed: int = 1, limit: int = 5) -> list[dict]:
-        return self.trade_tracker.get_best_pairs(min_closed=min_closed, limit=limit)
+    async def get_best_pairs(self, min_closed: int = 1, limit: int = 5) -> list[dict]:
+        return await self.trade_tracker.get_best_pairs(min_closed=min_closed, limit=limit)
 
-    def get_side_stats(self) -> dict:
-        return self.trade_tracker.get_side_stats()
+    async def get_side_stats(self) -> dict:
+        return await self.trade_tracker.get_side_stats()
 
-    def get_daily_report(self) -> list[dict]:
-        return self.trade_tracker.get_daily_report()
+    async def get_daily_report(self) -> list[dict]:
+        return await self.trade_tracker.get_daily_report()
 
-    def get_weekly_report(self) -> list[dict]:
-        return self.trade_tracker.get_weekly_report()
+    async def get_weekly_report(self) -> list[dict]:
+        return await self.trade_tracker.get_weekly_report()
 
-    def get_csv_path(self) -> str:
-        return self.trade_tracker.get_csv_path()
+    async def get_paper_stats(self) -> dict:
+        return await self.paper.stats()
 
-    def get_json_path(self) -> str:
-        return self.trade_tracker.get_json_path()
+    async def get_paper_open_trades(self) -> list[dict]:
+        return await self.paper.get_open_trades()
 
-    def get_heartbeat(self) -> dict:
+    async def get_paper_history(self, limit: int = 10) -> list[dict]:
+        return await self.paper.get_last_closed(limit)
+
+    async def get_heartbeat(self) -> dict:
         return {
             "mode": Config.STRATEGY_MODE,
             "scan_interval": Config.SCAN_INTERVAL_SECONDS,
-            "open_signals": len(self.get_open_signals()),
+            "open_signals": len(await self.get_open_signals()),
             "last_cycle": self.last_cycle_info,
-            "paper_stats": self.paper.stats(),
+            "paper_stats": await self.paper.stats(),
         }
 
     async def _send_closed_signal_notifications(self, bot: Bot):
-        items = self.trade_tracker.get_unnotified_closed_signals()
+        items = await self.trade_tracker.get_unnotified_closed_signals()
 
         for item in items:
             try:
                 text = format_result_message(item)
                 await send_text_to_all(bot, Config.CHAT_IDS, text)
-                self.trade_tracker.mark_notified(item["id"])
+                await self.trade_tracker.mark_notified(item["id"])
                 logger.info(f"[NOTIFY] Отправлен результат сигнала {item['symbol']} -> {item['status']}")
             except Exception as error:
                 logger.exception(f"[NOTIFY ERROR] {item.get('symbol')} | {error}")
 
     async def check_open_signals(self, bot: Bot):
-        open_signals = self.trade_tracker.get_open_signals()
+        open_signals = await self.trade_tracker.get_open_signals()
 
-        if open_signals:
-            for item in open_signals:
-                try:
-                    symbol = item["symbol"]
-                    direction = item["direction"]
+        for item in open_signals:
+            try:
+                symbol = item["symbol"]
+                direction = item["direction"]
 
-                    ltf_df = await self.client.get_klines(symbol, Config.LTF_INTERVAL, 5)
-                    if len(ltf_df) < 2:
-                        continue
+                ltf_df = await self.client.get_klines(symbol, Config.LTF_INTERVAL, 5)
+                if len(ltf_df) < 2:
+                    continue
 
-                    last_closed = ltf_df.iloc[-2]
-                    high = float(last_closed["high"])
-                    low = float(last_closed["low"])
+                last_closed = ltf_df.iloc[-2]
+                high = float(last_closed["high"])
+                low = float(last_closed["low"])
 
-                    stop_loss = float(item["stop_loss"])
-                    tp1 = float(item["tp1"])
-                    tp2 = float(item["tp2"])
-                    tp3 = float(item["tp3"])
+                stop_loss = float(item["stop_loss"])
+                tp1 = float(item["tp1"])
+                tp2 = float(item["tp2"])
+                tp3 = float(item["tp3"])
 
-                    new_status = None
+                new_status = None
 
-                    if direction == "LONG":
-                        if low <= stop_loss:
-                            new_status = "STOP_HIT"
-                        elif high >= tp3:
-                            new_status = "TP3_HIT"
-                        elif high >= tp2:
-                            new_status = "TP2_HIT"
-                        elif high >= tp1:
-                            new_status = "TP1_HIT"
-                    else:
-                        if high >= stop_loss:
-                            new_status = "STOP_HIT"
-                        elif low <= tp3:
-                            new_status = "TP3_HIT"
-                        elif low <= tp2:
-                            new_status = "TP2_HIT"
-                        elif low <= tp1:
-                            new_status = "TP1_HIT"
+                if direction == "LONG":
+                    if low <= stop_loss:
+                        new_status = "STOP_HIT"
+                    elif high >= tp3:
+                        new_status = "TP3_HIT"
+                    elif high >= tp2:
+                        new_status = "TP2_HIT"
+                    elif high >= tp1:
+                        new_status = "TP1_HIT"
+                else:
+                    if high >= stop_loss:
+                        new_status = "STOP_HIT"
+                    elif low <= tp3:
+                        new_status = "TP3_HIT"
+                    elif low <= tp2:
+                        new_status = "TP2_HIT"
+                    elif low <= tp1:
+                        new_status = "TP1_HIT"
 
-                    if new_status:
-                        self.trade_tracker.update_signal(item["id"], new_status)
-                        logger.info(f"[TRACKER] {symbol} {direction} -> {new_status}")
+                if new_status:
+                    await self.trade_tracker.update_signal(item["id"], new_status)
+                    logger.info(f"[TRACKER] {symbol} {direction} -> {new_status}")
 
-                except Exception as error:
-                    logger.exception(f"[TRACKER ERROR] {item.get('symbol')} | {error}")
+            except Exception as error:
+                logger.exception(f"[TRACKER ERROR] {item.get('symbol')} | {error}")
 
         await self._send_closed_signal_notifications(bot)
 
@@ -248,22 +246,21 @@ class MarketScanner:
             return ""
 
         parts = []
-
-        def add(name: str, key: str):
+        for label, key in [
+            ("ADX4h", "htf_adx"),
+            ("ADX1h", "mtf_adx"),
+            ("RSI15m", "ltf_rsi"),
+            ("MACD15m", "ltf_macd_hist"),
+            ("ATRr15m", "ltf_atr_ratio"),
+            ("Vol15m", "ltf_quote_volume_ratio"),
+            ("RR", "rr"),
+            ("ResGap", "resistance_gap"),
+            ("SupGap", "support_gap"),
+            ("Setup", "setup_type"),
+        ]:
             value = diagnostics.get(key)
             if value is not None:
-                parts.append(f"{name}={value}")
-
-        add("ADX4h", "htf_adx")
-        add("ADX1h", "mtf_adx")
-        add("RSI15m", "ltf_rsi")
-        add("MACD15m", "ltf_macd_hist")
-        add("ATRr15m", "ltf_atr_ratio")
-        add("Vol15m", "ltf_quote_volume_ratio")
-        add("RR", "rr")
-        add("ResGap", "resistance_gap")
-        add("SupGap", "support_gap")
-        add("Setup", "setup_type")
+                parts.append(f"{label}={value}")
 
         return " | " + ", ".join(parts) if parts else ""
 
@@ -279,18 +276,14 @@ class MarketScanner:
         logger.info("Использую резервный список пар из config.py")
         return Config.DEFAULT_SYMBOLS
 
-    def _log_paper_stats(self):
-        stats = self.paper.stats()
+    async def _log_paper_stats(self):
+        stats = await self.paper.stats()
         logger.info(
             "[PAPER STATS] "
-            f"balance={stats['balance']}$ | "
-            f"pnl={stats['pnl_usdt']}$ | "
-            f"R={stats['total_r']} | "
-            f"trades={stats['total_trades']} | "
-            f"open={stats['open_trades']} | "
-            f"closed={stats['closed_trades']} | "
-            f"wins={stats['wins']} | "
-            f"losses={stats['losses']} | "
+            f"balance={stats['balance']}$ | pnl={stats['pnl_usdt']}$ | "
+            f"R={stats['total_r']} | trades={stats['total_trades']} | "
+            f"open={stats['open_trades']} | closed={stats['closed_trades']} | "
+            f"wins={stats['wins']} | losses={stats['losses']} | "
             f"winrate={stats['winrate']}%"
         )
 
@@ -304,14 +297,13 @@ class MarketScanner:
             high = float(last_closed["high"])
             low = float(last_closed["low"])
 
-            closed_now = self.paper.update_symbol_price(symbol, high, low)
+            closed_now = await self.paper.update_symbol_price(symbol, high, low)
 
             for trade in closed_now:
                 logger.info(
                     f"[PAPER CLOSED] {trade.symbol} {trade.direction} {trade.close_reason} | "
                     f"type={trade.signal_type} | result={trade.result_usdt}$ | R={trade.result_r}"
                 )
-
         except Exception as error:
             logger.exception(f"[PAPER UPDATE ERROR] {symbol} | {error}")
 
@@ -324,8 +316,7 @@ class MarketScanner:
 
             logger.info(
                 f"Старт сканирования рынка... режим={Config.STRATEGY_MODE} | "
-                f"news_block={news_decision.blocked} | "
-                f"sentiment={news_decision.sentiment_bias} | "
+                f"news_block={news_decision.blocked} | sentiment={news_decision.sentiment_bias} | "
                 f"news_reason={news_decision.reason}"
             )
 
@@ -349,25 +340,10 @@ class MarketScanner:
                         f"🛑 News block\n\nПричина: {news_decision.reason}\nSentiment: {news_decision.sentiment_bias}",
                     )
 
-                logger.info(f"[NEWS BLOCK] {news_decision.reason}")
-                self._log_paper_stats()
+                await self._log_paper_stats()
                 return []
 
             symbols = await self._load_symbols_for_scan()
-
-            if send_to_telegram and Config.SEND_CYCLE_MESSAGES:
-                await send_text_to_all(
-                    bot,
-                    Config.CHAT_IDS,
-                    (
-                        "🔄 Новый цикл анализа\n\n"
-                        f"Режим: {Config.STRATEGY_MODE}\n"
-                        f"Пары в анализе: {len(symbols)}\n"
-                        f"Sentiment: {news_decision.sentiment_bias}\n"
-                        f"Открытых сигналов: {len(self.get_open_signals())}"
-                    ),
-                )
-
             results: List[SignalCheckResult] = []
             skip_counter = Counter()
 
@@ -422,12 +398,12 @@ class MarketScanner:
 
             final_signals = []
             for signal in good_signals:
-                if self._is_on_cooldown(signal.symbol, signal.direction):
+                if await self._is_on_cooldown(signal.symbol, signal.direction):
                     logger.info(f"[COOLDOWN] {signal.symbol} {signal.direction} | повторный сигнал пропущен")
                     skip_counter["cooldown"] += 1
                     continue
 
-                if self._same_setup(signal):
+                if await self._same_setup(signal):
                     logger.info(f"[DUPLICATE] {signal.symbol} {signal.direction} | тот же сетап, пропускаю")
                     skip_counter["duplicate setup"] += 1
                     continue
@@ -436,27 +412,28 @@ class MarketScanner:
 
             top_signals = final_signals[: Config.MAX_SIGNALS_PER_SCAN]
 
-            if send_to_telegram and top_signals:
-                for signal in top_signals:
-                    try:
+            for signal in top_signals:
+                try:
+                    if send_to_telegram:
                         await send_signal(bot, Config.CHAT_IDS, signal)
-                        self._set_cooldown(signal.symbol, signal.direction)
-                        self._remember_signal(signal)
-                        self._log_signal_to_history(signal)
-                        self._track_new_signal(signal)
 
-                        paper_trade = self.paper.open_trade(signal)
-                        if paper_trade:
-                            logger.info(
-                                f"[PAPER OPEN] {paper_trade.symbol} {paper_trade.direction} {paper_trade.signal_type} | "
-                                f"entry={round(paper_trade.entry_price, 6)} | "
-                                f"risk={round(paper_trade.risk_amount, 2)}$ | "
-                                f"size={round(paper_trade.size, 2)}"
-                            )
+                    await self._set_cooldown(signal.symbol, signal.direction)
+                    await self._remember_signal(signal)
+                    await self._log_signal_to_history(signal)
+                    await self._track_new_signal(signal)
 
-                        logger.info(f"Сигнал отправлен: {signal.symbol}")
-                    except Exception as error:
-                        logger.exception(f"Ошибка отправки сигнала {signal.symbol}: {error}")
+                    paper_trade = await self.paper.open_trade(signal)
+                    if paper_trade:
+                        logger.info(
+                            f"[PAPER OPEN] {paper_trade.symbol} {paper_trade.direction} {paper_trade.signal_type} | "
+                            f"entry={round(paper_trade.entry_price, 6)} | "
+                            f"risk={round(paper_trade.risk_amount, 2)}$ | "
+                            f"size={round(paper_trade.size, 2)}"
+                        )
+
+                    logger.info(f"Сигнал отправлен: {signal.symbol}")
+                except Exception as error:
+                    logger.exception(f"Ошибка отправки сигнала {signal.symbol}: {error}")
 
             self.last_cycle_info = {
                 "started_at": cycle_started_at,
@@ -470,26 +447,8 @@ class MarketScanner:
                 "top_signal_symbols": [s.symbol for s in top_signals],
             }
 
-            if send_to_telegram and Config.SEND_CYCLE_MESSAGES:
-                if skip_counter:
-                    top_reasons = sorted(skip_counter.items(), key=lambda x: x[1], reverse=True)[:5]
-                    reasons_text = "\n".join(f"• {reason}: {count}" for reason, count in top_reasons)
-                else:
-                    reasons_text = "• нет skip-причин"
-
-                await send_text_to_all(
-                    bot,
-                    Config.CHAT_IDS,
-                    (
-                        "✅ Цикл завершён\n\n"
-                        f"Проверено пар: {len(symbols)}\n"
-                        f"Найдено сильных сигналов: {len(top_signals)}\n"
-                        f"Главные причины skip:\n{reasons_text}"
-                    ),
-                )
-
             if not top_signals:
                 logger.info("Сильных новых сигналов не найдено.")
 
-            self._log_paper_stats()
+            await self._log_paper_stats()
             return results

@@ -1,6 +1,6 @@
 from aiogram import Dispatcher, Router
 from aiogram.filters import Command
-from aiogram.types import FSInputFile, Message
+from aiogram.types import Message
 
 from config import Config
 
@@ -13,82 +13,75 @@ async def start_handler(message: Message):
         "Привет.\n"
         "Я бот для анализа Binance Futures.\n\n"
         "Команды:\n"
-        "/start - запуск\n"
-        "/status - статус\n"
-        "/heartbeat - жив ли бот\n"
-        "/scan - ручной запуск анализа\n"
-        "/chatid - показать ID текущего чата\n"
-        "/mode - показать текущие настройки\n"
-        "/lastsignals - показать последние сигналы\n"
-        "/open_signals - показать открытые сигналы\n"
-        "/stats - показать общую статистику\n"
-        "/stats_detailed - статистика по парам\n"
-        "/best_pairs - лучшие пары\n"
-        "/stats_sides - статистика LONG/SHORT\n"
-        "/daily_report - дневной отчёт\n"
-        "/weekly_report - недельный отчёт\n"
-        "/pnl_stats - PnL в R\n"
-        "/export_csv - выгрузить CSV\n"
-        "/export_json - выгрузить JSON"
+        "/status\n"
+        "/heartbeat\n"
+        "/mode\n"
+        "/lastsignals\n"
+        "/open_signals\n"
+        "/stats\n"
+        "/stats_detailed\n"
+        "/best_pairs\n"
+        "/stats_sides\n"
+        "/daily_report\n"
+        "/weekly_report\n"
+        "/pnl_stats\n"
+        "/paper_stats\n"
+        "/paper_open\n"
+        "/paper_history\n"
+        "/scan"
     )
 
 
 @router.message(Command("status"))
 async def status_handler(message: Message):
-    await message.answer("Бот работает. Аналитический движок активен.")
+    await message.answer("Бот работает. Данные сохраняются в PostgreSQL.")
 
 
 @router.message(Command("heartbeat"))
 async def heartbeat_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    hb = scanner.get_heartbeat()
+    hb = await scanner.get_heartbeat()
     cycle = hb["last_cycle"]
+    paper = hb["paper_stats"]
 
     top_symbols = ", ".join(cycle.get("top_signal_symbols", [])) if cycle.get("top_signal_symbols") else "нет"
 
     await message.answer(
         "💓 Heartbeat\n\n"
         f"Режим: {hb['mode']}\n"
-        f"Интервал сканирования: {hb['scan_interval']} сек\n"
+        f"Интервал: {hb['scan_interval']} сек\n"
         f"Открытых сигналов: {hb['open_signals']}\n"
-        f"Последний цикл старт: {cycle.get('started_at')}\n"
-        f"Последний цикл финиш: {cycle.get('finished_at')}\n"
+        f"Старт последнего цикла: {cycle.get('started_at')}\n"
+        f"Финиш последнего цикла: {cycle.get('finished_at')}\n"
         f"News block: {cycle.get('news_block')}\n"
         f"Причина news guard: {cycle.get('news_reason')}\n"
         f"Sentiment: {cycle.get('sentiment')}\n"
         f"Проверено пар: {cycle.get('symbols_checked')}\n"
         f"Сильных сигналов: {cycle.get('signals_found')}\n"
-        f"Последние top symbols: {top_symbols}"
-    )
-
-
-@router.message(Command("chatid"))
-async def chatid_handler(message: Message):
-    await message.answer(
-        f"ID этого чата:\n{message.chat.id}\n\n"
-        f"Тип чата: {message.chat.type}"
+        f"Top symbols: {top_symbols}\n\n"
+        f"Paper balance: {paper['balance']}$\n"
+        f"Paper PnL: {paper['pnl_usdt']}$"
     )
 
 
 @router.message(Command("mode"))
 async def mode_handler(message: Message):
     await message.answer(
-        "⚙️ Текущие настройки бота\n\n"
+        "⚙️ Текущие настройки\n\n"
         f"Режим: {Config.STRATEGY_MODE}\n"
-        f"Интервал сканирования: {Config.SCAN_INTERVAL_SECONDS} сек\n"
-        f"Максимум сигналов за цикл: {Config.MAX_SIGNALS_PER_SCAN}\n"
-        f"Только priority-пары: {Config.USE_PRIORITY_SYMBOLS_ONLY}\n"
-        f"Максимум пар: {Config.MAX_SYMBOLS_TO_SCAN}\n"
+        f"Интервал: {Config.SCAN_INTERVAL_SECONDS} сек\n"
+        f"Макс сигналов за цикл: {Config.MAX_SIGNALS_PER_SCAN}\n"
+        f"Макс пар: {Config.MAX_SYMBOLS_TO_SCAN}\n"
         f"Cooldown: {Config.SIGNAL_COOLDOWN_MINUTES} мин\n"
-        f"Min score: {Config.MIN_SCORE}\n"
-        f"Min RR: {Config.MIN_RR}"
+        f"Strong score/RR: {Config.STRONG_MIN_SCORE} / {Config.STRONG_MIN_RR}\n"
+        f"Setup score/RR: {Config.SETUP_MIN_SCORE} / {Config.SETUP_MIN_RR}"
     )
 
 
 @router.message(Command("lastsignals"))
 async def lastsignals_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    signals = scanner.get_last_logged_signals(limit=5)
+    signals = await scanner.get_last_logged_signals(limit=5)
 
     if not signals:
         await message.answer("История сигналов пока пуста.")
@@ -98,8 +91,8 @@ async def lastsignals_handler(message: Message, dispatcher: Dispatcher):
     for item in signals:
         lines.append(
             f"{item['symbol']} | {item['direction']} | "
-            f"score={item['score']} | "
-            f"entry={item['entry_min']} - {item['entry_max']}"
+            f"type={item.get('signal_type', 'UNKNOWN')} | "
+            f"score={item['score']}"
         )
 
     await message.answer("\n".join(lines))
@@ -108,7 +101,7 @@ async def lastsignals_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("open_signals"))
 async def open_signals_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    signals = scanner.get_open_signals()
+    signals = await scanner.get_open_signals()
 
     if not signals:
         await message.answer("Сейчас нет открытых сигналов.")
@@ -128,7 +121,7 @@ async def open_signals_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("stats"))
 async def stats_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    stats = scanner.get_stats()
+    stats = await scanner.get_stats()
 
     await message.answer(
         "📊 Статистика сигналов\n\n"
@@ -149,10 +142,10 @@ async def stats_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("pnl_stats"))
 async def pnl_stats_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    stats = scanner.get_stats()
+    stats = await scanner.get_stats()
 
     await message.answer(
-        "💰 PnL статистика в R\n\n"
+        "💰 PnL в R\n\n"
         f"Закрытых сигналов: {stats['closed']}\n"
         f"Total R: {stats['total_r']}\n"
         f"Avg R: {stats['avg_r']}\n"
@@ -164,7 +157,7 @@ async def pnl_stats_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("stats_detailed"))
 async def stats_detailed_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    rows = scanner.get_pair_stats()
+    rows = await scanner.get_pair_stats()
 
     if not rows:
         await message.answer("Детальная статистика пока пуста.")
@@ -174,8 +167,7 @@ async def stats_detailed_handler(message: Message, dispatcher: Dispatcher):
     for row in rows[:10]:
         lines.append(
             f"{row['symbol']} | closed={row['closed']} | "
-            f"winrate={row['winrate']}% | "
-            f"totalR={row['total_r']} | exp={row['expectancy']}"
+            f"winrate={row['winrate']}% | totalR={row['total_r']}"
         )
 
     await message.answer("\n".join(lines))
@@ -184,17 +176,17 @@ async def stats_detailed_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("best_pairs"))
 async def best_pairs_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    rows = scanner.get_best_pairs(min_closed=1, limit=5)
+    rows = await scanner.get_best_pairs(min_closed=1, limit=5)
 
     if not rows:
-        await message.answer("Пока нет лучших пар — ещё мало закрытых сигналов.")
+        await message.answer("Пока нет лучших пар.")
         return
 
     lines = ["🏆 Лучшие пары:\n"]
     for row in rows:
         lines.append(
             f"{row['symbol']} | winrate={row['winrate']}% | "
-            f"closed={row['closed']} | totalR={row['total_r']} | exp={row['expectancy']}"
+            f"closed={row['closed']} | totalR={row['total_r']}"
         )
 
     await message.answer("\n".join(lines))
@@ -203,7 +195,7 @@ async def best_pairs_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("stats_sides"))
 async def stats_sides_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    data = scanner.get_side_stats()
+    data = await scanner.get_side_stats()
     long_stats = data["LONG"]
     short_stats = data["SHORT"]
 
@@ -213,23 +205,19 @@ async def stats_sides_handler(message: Message, dispatcher: Dispatcher):
         f"- total: {long_stats['total']}\n"
         f"- closed: {long_stats['closed']}\n"
         f"- winrate: {long_stats['winrate']}%\n"
-        f"- totalR: {long_stats['total_r']}\n"
-        f"- avgR: {long_stats['avg_r']}\n"
-        f"- expectancy: {long_stats['expectancy']}\n\n"
+        f"- totalR: {long_stats['total_r']}\n\n"
         f"SHORT:\n"
         f"- total: {short_stats['total']}\n"
         f"- closed: {short_stats['closed']}\n"
         f"- winrate: {short_stats['winrate']}%\n"
-        f"- totalR: {short_stats['total_r']}\n"
-        f"- avgR: {short_stats['avg_r']}\n"
-        f"- expectancy: {short_stats['expectancy']}"
+        f"- totalR: {short_stats['total_r']}"
     )
 
 
 @router.message(Command("daily_report"))
 async def daily_report_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    report = scanner.get_daily_report()
+    report = await scanner.get_daily_report()
 
     if not report:
         await message.answer("Дневной отчёт пока пуст.")
@@ -248,7 +236,7 @@ async def daily_report_handler(message: Message, dispatcher: Dispatcher):
 @router.message(Command("weekly_report"))
 async def weekly_report_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    report = scanner.get_weekly_report()
+    report = await scanner.get_weekly_report()
 
     if not report:
         await message.answer("Недельный отчёт пока пуст.")
@@ -264,24 +252,67 @@ async def weekly_report_handler(message: Message, dispatcher: Dispatcher):
     await message.answer("\n".join(lines))
 
 
-@router.message(Command("export_csv"))
-async def export_csv_handler(message: Message, dispatcher: Dispatcher):
+@router.message(Command("paper_stats"))
+async def paper_stats_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    path = scanner.get_csv_path()
-    await message.answer_document(FSInputFile(path), caption="tracked_signals.csv")
+    stats = await scanner.get_paper_stats()
+
+    await message.answer(
+        "🧪 Paper Trading Stats\n\n"
+        f"Start balance: {stats['start_balance']}$\n"
+        f"Current balance: {stats['balance']}$\n"
+        f"PnL: {stats['pnl_usdt']}$\n"
+        f"Total R: {stats['total_r']}\n"
+        f"Total trades: {stats['total_trades']}\n"
+        f"Open trades: {stats['open_trades']}\n"
+        f"Closed trades: {stats['closed_trades']}\n"
+        f"Wins: {stats['wins']}\n"
+        f"Losses: {stats['losses']}\n"
+        f"Winrate: {stats['winrate']}%"
+    )
 
 
-@router.message(Command("export_json"))
-async def export_json_handler(message: Message, dispatcher: Dispatcher):
+@router.message(Command("paper_open"))
+async def paper_open_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    path = scanner.get_json_path()
-    await message.answer_document(FSInputFile(path), caption="tracked_signals.json")
+    trades = await scanner.get_paper_open_trades()
+
+    if not trades:
+        await message.answer("Нет открытых paper-сделок.")
+        return
+
+    lines = ["📂 Open Paper Trades\n"]
+    for t in trades[:10]:
+        lines.append(
+            f"{t['symbol']} | {t['direction']} | {t['signal_type']} | "
+            f"entry={round(t['entry_price'], 6)} | risk={round(t['risk_amount'], 2)}$"
+        )
+
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("paper_history"))
+async def paper_history_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
+    trades = await scanner.get_paper_history(limit=10)
+
+    if not trades:
+        await message.answer("История paper-сделок пока пуста.")
+        return
+
+    lines = ["📜 Last Closed Paper Trades\n"]
+    for t in trades:
+        lines.append(
+            f"{t['symbol']} | {t['direction']} | {t['signal_type']} | "
+            f"{t['close_reason']} | {round(t['result_usdt'], 2)}$ | R={round(t['result_r'], 2)}"
+        )
+
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("scan"))
 async def scan_handler(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-
-    await message.answer("Запускаю ручной анализ рынка. Смотри результат в Telegram и логах.")
+    await message.answer("Запускаю ручной анализ рынка.")
     await scanner.scan_market(message.bot, send_to_telegram=True)
     await message.answer("Ручной анализ завершён.")
