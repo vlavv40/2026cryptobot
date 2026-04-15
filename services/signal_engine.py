@@ -13,7 +13,7 @@ from services.indicators import (
     add_support_resistance,
     atr_ratio,
 )
-from services.structure_engine import StructureEngine
+from services.structure_engine import StructureEngine, SetupDecision
 
 
 @dataclass
@@ -42,7 +42,7 @@ class SignalCheckResult:
 
 class SignalEngine:
     def __init__(self):
-        self.structure_engine = StructureEngine()
+        self.structure = StructureEngine()
 
     def prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -77,12 +77,20 @@ class SignalEngine:
 
         resistance_gap = None
         support_gap = None
+        dist_ema20 = None
+        dist_ema50 = None
 
         if pd.notna(ltf_last["resistance"]) and ltf_last["close"] != 0:
-            resistance_gap = (ltf_last["resistance"] - ltf_last["close"]) / ltf_last["close"]
+            resistance_gap = (float(ltf_last["resistance"]) - float(ltf_last["close"])) / float(ltf_last["close"])
 
         if pd.notna(ltf_last["support"]) and ltf_last["close"] != 0:
-            support_gap = (ltf_last["close"] - ltf_last["support"]) / ltf_last["close"]
+            support_gap = (float(ltf_last["close"]) - float(ltf_last["support"])) / float(ltf_last["close"])
+
+        if pd.notna(ltf_last["ema20"]) and ltf_last["close"] != 0:
+            dist_ema20 = abs(float(ltf_last["close"]) - float(ltf_last["ema20"])) / float(ltf_last["close"])
+
+        if pd.notna(ltf_last["ema50"]) and ltf_last["close"] != 0:
+            dist_ema50 = abs(float(ltf_last["close"]) - float(ltf_last["ema50"])) / float(ltf_last["close"])
 
         return {
             "htf_adx": round(float(htf_last["adx"]), 3) if pd.notna(htf_last["adx"]) else None,
@@ -93,47 +101,47 @@ class SignalEngine:
             "ltf_quote_volume_ratio": round(float(ltf_last["quote_volume_ratio"]), 3) if pd.notna(ltf_last["quote_volume_ratio"]) else None,
             "resistance_gap": round(float(resistance_gap), 6) if resistance_gap is not None else None,
             "support_gap": round(float(support_gap), 6) if support_gap is not None else None,
+            "dist_ema20": round(float(dist_ema20), 6) if dist_ema20 is not None else None,
+            "dist_ema50": round(float(dist_ema50), 6) if dist_ema50 is not None else None,
         }
-
-    def _check_structure_setup(
-        self,
-        htf_df: pd.DataFrame,
-        mtf_df: pd.DataFrame,
-        ltf_df: pd.DataFrame,
-    ):
-        return self.structure_engine.detect_setup(htf_df, mtf_df, ltf_df)
 
     def _check_confirmation(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
         last = self._closed(ltf_df)
         prev = self._prev_closed(ltf_df)
 
-        if last["atr_ratio"] < Config.MIN_ATR_RATIO_15M:
+        if float(last["atr_ratio"]) < Config.MIN_ATR_RATIO_15M:
             return False, "15m слишком вялый"
 
-        if last["quote_volume_ratio"] < Config.MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO:
+        if float(last["quote_volume_ratio"]) < Config.MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO:
             return False, "15m денежный объём слишком слабый"
 
         if direction == "LONG":
-            if last["rsi"] > Config.LONG_MAX_RSI_ENTRY:
-                return False, "LONG перегрет по RSI"
+            if float(last["rsi"]) > 58:
+                return False, "LONG уже перегрет по RSI"
+
+            if float(last["close"]) < float(last["ema20"]) and float(last["close"]) < float(last["ema50"]):
+                return False, "LONG не удерживает зону EMA20/EMA50"
 
             macd_ok = (
-                last["macd_hist"] > 0
-                or last["macd"] > last["macd_signal"]
-                or last["macd_hist"] > prev["macd_hist"]
+                float(last["macd_hist"]) > 0
+                or float(last["macd"]) > float(last["macd_signal"])
+                or float(last["macd_hist"]) > float(prev["macd_hist"])
             )
             if not macd_ok:
                 return False, "MACD не подтверждает LONG"
 
             return True, ""
 
-        if last["rsi"] < Config.SHORT_MIN_RSI_ENTRY:
-            return False, "SHORT перегрет по RSI"
+        if float(last["rsi"]) < 42:
+            return False, "SHORT уже перегрет по RSI"
+
+        if float(last["close"]) > float(last["ema20"]) and float(last["close"]) > float(last["ema50"]):
+            return False, "SHORT не удерживает зону EMA20/EMA50"
 
         macd_ok = (
-            last["macd_hist"] < 0
-            or last["macd"] < last["macd_signal"]
-            or last["macd_hist"] < prev["macd_hist"]
+            float(last["macd_hist"]) < 0
+            or float(last["macd"]) < float(last["macd_signal"])
+            or float(last["macd_hist"]) < float(prev["macd_hist"])
         )
         if not macd_ok:
             return False, "MACD не подтверждает SHORT"
@@ -142,153 +150,112 @@ class SignalEngine:
 
     def calculate_score(
         self,
-        setup_type: str,
-        direction: str,
+        setup: SetupDecision,
         htf_df: pd.DataFrame,
         mtf_df: pd.DataFrame,
         ltf_df: pd.DataFrame,
     ) -> tuple[float, list[str]]:
         score = 0.0
-        reasons = []
+        reasons: list[str] = []
 
         htf_last = self._closed(htf_df)
         mtf_last = self._closed(mtf_df)
         ltf_last = self._closed(ltf_df)
         ltf_prev = self._prev_closed(ltf_df)
 
-        if direction == "LONG":
-            score += 2.0
-            reasons.append("структура рынка смотрит вверх")
+        score += 2.0
+        reasons.append(setup.reason)
 
-            if setup_type == "PULLBACK_CONTINUATION":
-                score += 1.5
-                reasons.append("сетап: continuation after pullback")
+        if setup.setup_type == "TREND_PULLBACK":
+            score += 1.8
+            reasons.append("сетап: trend pullback")
 
-            if setup_type == "BREAKOUT_RETEST":
-                score += 1.3
-                reasons.append("сетап: breakout + retest вверх")
-
-            if htf_last["ema_fast"] > htf_last["ema_slow"]:
+        if setup.direction == "LONG":
+            if float(htf_last["ema_fast"]) > float(htf_last["ema_slow"]):
                 score += 0.8
                 reasons.append("EMA 50 выше EMA 200 на 4h")
 
-            if htf_last["adx"] >= Config.MIN_ADX_4H:
-                score += 0.7
+            if float(htf_last["adx"]) >= Config.MIN_ADX_4H:
+                score += 0.8
                 reasons.append("4h ADX подтверждает силу тренда")
 
-            if mtf_last["adx"] >= Config.MIN_ADX_1H:
+            if float(mtf_last["adx"]) >= Config.MIN_ADX_1H:
                 score += 0.6
                 reasons.append("1h ADX поддерживает движение")
 
-            if ltf_last["close"] >= ltf_last["ema20"] or ltf_last["close"] >= ltf_last["ema50"]:
-                score += 0.7
-                reasons.append("15m удерживает рабочую зону")
-
-            if 48 <= ltf_last["rsi"] <= 60:
+            if 47 <= float(ltf_last["rsi"]) <= 58:
                 score += 0.9
-                reasons.append("RSI в нормальной зоне LONG")
-            elif 60 < ltf_last["rsi"] <= Config.LONG_MAX_RSI_ENTRY:
-                score += 0.3
-                reasons.append("RSI выше, но ещё допустим")
+                reasons.append("RSI в рабочей зоне LONG")
 
             if (
-                ltf_last["macd_hist"] > 0
-                or ltf_last["macd"] > ltf_last["macd_signal"]
-                or ltf_last["macd_hist"] > ltf_prev["macd_hist"]
+                float(ltf_last["macd_hist"]) > 0
+                or float(ltf_last["macd"]) > float(ltf_last["macd_signal"])
+                or float(ltf_last["macd_hist"]) > float(ltf_prev["macd_hist"])
             ):
                 score += 0.8
                 reasons.append("MACD подтверждает LONG")
 
-            if ltf_last["quote_volume_ratio"] >= 1.0:
+            if float(ltf_last["quote_volume_ratio"]) >= 1.0:
                 score += 0.8
-                reasons.append("объём на 15m не слабый")
-
-            if pd.notna(ltf_last["support"]):
-                gap = (ltf_last["close"] - ltf_last["support"]) / ltf_last["close"]
-                if 0 < gap <= 0.018:
-                    score += 0.6
-                    reasons.append("рядом поддержка")
+                reasons.append("объём не слабый")
 
         else:
-            score += 2.0
-            reasons.append("структура рынка смотрит вниз")
-
-            if setup_type == "PULLBACK_CONTINUATION":
-                score += 1.5
-                reasons.append("сетап: continuation after pullback")
-
-            if setup_type == "BREAKOUT_RETEST":
-                score += 1.3
-                reasons.append("сетап: breakout + retest вниз")
-
-            if htf_last["ema_fast"] < htf_last["ema_slow"]:
+            if float(htf_last["ema_fast"]) < float(htf_last["ema_slow"]):
                 score += 0.8
                 reasons.append("EMA 50 ниже EMA 200 на 4h")
 
-            if htf_last["adx"] >= Config.MIN_ADX_4H:
-                score += 0.7
+            if float(htf_last["adx"]) >= Config.MIN_ADX_4H:
+                score += 0.8
                 reasons.append("4h ADX подтверждает силу тренда")
 
-            if mtf_last["adx"] >= Config.MIN_ADX_1H:
+            if float(mtf_last["adx"]) >= Config.MIN_ADX_1H:
                 score += 0.6
                 reasons.append("1h ADX поддерживает движение")
 
-            if ltf_last["close"] <= ltf_last["ema20"] or ltf_last["close"] <= ltf_last["ema50"]:
-                score += 0.7
-                reasons.append("15m удерживает рабочую зону")
-
-            if Config.SHORT_MIN_RSI_ENTRY <= ltf_last["rsi"] <= 52:
+            if 42 <= float(ltf_last["rsi"]) <= 53:
                 score += 0.9
-                reasons.append("RSI в нормальной зоне SHORT")
-            elif 52 < ltf_last["rsi"] <= 56:
-                score += 0.3
-                reasons.append("RSI чуть слабее для SHORT, но допустим")
+                reasons.append("RSI в рабочей зоне SHORT")
 
             if (
-                ltf_last["macd_hist"] < 0
-                or ltf_last["macd"] < ltf_last["macd_signal"]
-                or ltf_last["macd_hist"] < ltf_prev["macd_hist"]
+                float(ltf_last["macd_hist"]) < 0
+                or float(ltf_last["macd"]) < float(ltf_last["macd_signal"])
+                or float(ltf_last["macd_hist"]) < float(ltf_prev["macd_hist"])
             ):
                 score += 0.8
                 reasons.append("MACD подтверждает SHORT")
 
-            if ltf_last["quote_volume_ratio"] >= 1.0:
+            if float(ltf_last["quote_volume_ratio"]) >= 1.0:
                 score += 0.8
-                reasons.append("объём на 15m не слабый")
-
-            if pd.notna(ltf_last["resistance"]):
-                gap = (ltf_last["resistance"] - ltf_last["close"]) / ltf_last["close"]
-                if 0 < gap <= 0.018:
-                    score += 0.6
-                    reasons.append("рядом сопротивление")
+                reasons.append("объём не слабый")
 
         return round(score, 1), reasons
 
-    def build_trade_levels(self, direction: str, ltf_df: pd.DataFrame):
+    def build_trade_levels(self, setup: SetupDecision, ltf_df: pd.DataFrame):
         last = self._closed(ltf_df)
-        atr = float(last["atr"])
+
         close = float(last["close"])
-        support = last["support"]
-        resistance = last["resistance"]
         ema20 = float(last["ema20"])
         ema50 = float(last["ema50"])
+        atr = float(last["atr"])
 
-        if pd.isna(atr) or atr <= 0:
+        if atr <= 0:
             return None
 
-        stop_buffer = atr * Config.MIN_STOP_BUFFER_ATR
+        zone_low = float(setup.zone_low) if setup.zone_low is not None else min(ema20, ema50)
+        zone_high = float(setup.zone_high) if setup.zone_high is not None else max(ema20, ema50)
+        invalidation = float(setup.invalidation) if setup.invalidation is not None else None
 
-        if direction == "LONG":
-            anchor = min(close, ema20, ema50)
-            entry_min = anchor * 0.999
-            entry_max = close * 1.001
+        if invalidation is None:
+            return None
 
-            stop_candidates = [close - atr * 1.2]
-            if pd.notna(support):
-                stop_candidates.append(float(support) - atr * 0.15)
+        if setup.direction == "LONG":
+            entry_min = zone_low
+            entry_max = min(zone_high * 1.002, close * 1.0015)
 
-            stop_loss = min(stop_candidates)
-            stop_loss = min(stop_loss, entry_min - stop_buffer)
+            if entry_max <= entry_min:
+                entry_max = entry_min * 1.002
+
+            stop_loss = invalidation - atr * 0.20
 
             if stop_loss >= entry_min:
                 return None
@@ -297,28 +264,19 @@ class SignalEngine:
             if risk <= 0:
                 return None
 
-            tp1 = entry_max + risk * 1.6
-            tp2 = entry_max + risk * 2.3
-            tp3 = entry_max + risk * 3.0
-
+            tp1 = entry_max + risk * 1.8
+            tp2 = entry_max + risk * 2.5
+            tp3 = entry_max + risk * 3.2
             rr = (tp1 - entry_max) / risk
 
-            if pd.notna(resistance):
-                resistance = float(resistance)
-                if resistance <= entry_max:
-                    return None
-
         else:
-            anchor = max(close, ema20, ema50)
-            entry_min = close * 0.999
-            entry_max = anchor * 1.001
+            entry_min = max(zone_low * 0.998, close * 0.9985)
+            entry_max = zone_high
 
-            stop_candidates = [close + atr * 1.2]
-            if pd.notna(resistance):
-                stop_candidates.append(float(resistance) + atr * 0.15)
+            if entry_max <= entry_min:
+                entry_min = entry_max * 0.998
 
-            stop_loss = max(stop_candidates)
-            stop_loss = max(stop_loss, entry_max + stop_buffer)
+            stop_loss = invalidation + atr * 0.20
 
             if stop_loss <= entry_max:
                 return None
@@ -327,16 +285,12 @@ class SignalEngine:
             if risk <= 0:
                 return None
 
-            tp1 = entry_min - risk * 1.6
-            tp2 = entry_min - risk * 2.3
-            tp3 = entry_min - risk * 3.0
-
+            tp1 = entry_min - risk * 1.8
+            tp2 = entry_min - risk * 2.5
+            tp3 = entry_min - risk * 3.2
             rr = (entry_min - tp1) / risk
 
-            if pd.notna(support):
-                support = float(support)
-                if support >= entry_min:
-                    return None
+        stop_distance_ratio = abs(((entry_min + entry_max) / 2) - stop_loss) / ((entry_min + entry_max) / 2)
 
         return {
             "entry_min": entry_min,
@@ -346,6 +300,7 @@ class SignalEngine:
             "tp2": tp2,
             "tp3": tp3,
             "rr": rr,
+            "stop_distance_ratio": stop_distance_ratio,
         }
 
     def classify_signal(self, score: float, rr: float) -> Optional[str]:
@@ -378,8 +333,9 @@ class SignalEngine:
 
         diagnostics = self._build_diagnostics(htf_df, mtf_df, ltf_df)
 
-        setup = self._check_structure_setup(htf_df, mtf_df, ltf_df)
-        if setup.setup_type == "NONE":
+        setup = self.structure.detect_setup(htf_df, mtf_df, ltf_df)
+        if not setup.valid:
+            diagnostics["setup_type"] = setup.setup_type
             return SignalCheckResult(
                 symbol=symbol,
                 signal=None,
@@ -389,6 +345,7 @@ class SignalEngine:
 
         confirm_ok, confirm_reason = self._check_confirmation(setup.direction, ltf_df)
         if not confirm_ok:
+            diagnostics["setup_type"] = setup.setup_type
             return SignalCheckResult(
                 symbol=symbol,
                 signal=None,
@@ -396,29 +353,32 @@ class SignalEngine:
                 diagnostics=diagnostics,
             )
 
-        score, reasons = self.calculate_score(
-            setup.setup_type,
-            setup.direction,
-            htf_df,
-            mtf_df,
-            ltf_df,
-        )
-        reasons.insert(0, setup.reason)
+        score, reasons = self.calculate_score(setup, htf_df, mtf_df, ltf_df)
+        levels = self.build_trade_levels(setup, ltf_df)
 
-        levels = self.build_trade_levels(setup.direction, ltf_df)
         if not levels:
+            diagnostics["setup_type"] = setup.setup_type
             return SignalCheckResult(
                 symbol=symbol,
                 signal=None,
-                skip_reason="не удалось построить entry/stop/tp",
+                skip_reason="не удалось построить нормальный entry/stop",
                 diagnostics=diagnostics,
             )
 
         diagnostics["rr"] = round(float(levels["rr"]), 3)
         diagnostics["score"] = round(float(score), 3)
         diagnostics["setup_type"] = setup.setup_type
+        diagnostics["stop_distance_ratio"] = round(float(levels["stop_distance_ratio"]), 6)
 
-        signal_type = self.classify_signal(score, levels["rr"])
+        if float(levels["stop_distance_ratio"]) < 0.0025:
+            return SignalCheckResult(
+                symbol=symbol,
+                signal=None,
+                skip_reason="стоп слишком близкий, сделка хрупкая",
+                diagnostics=diagnostics,
+            )
+
+        signal_type = self.classify_signal(score, float(levels["rr"]))
         if not signal_type:
             return SignalCheckResult(
                 symbol=symbol,
@@ -432,17 +392,17 @@ class SignalEngine:
             )
 
         if signal_type == "SETUP":
-            reasons.append("это SETUP-сигнал: риск лучше держать аккуратнее")
+            reasons.append("это SETUP-сигнал: размер позиции лучше уменьшать")
 
         signal = Signal(
             symbol=symbol,
             direction=setup.direction,
-            entry_min=round(levels["entry_min"], 4),
-            entry_max=round(levels["entry_max"], 4),
-            stop_loss=round(levels["stop_loss"], 4),
-            tp1=round(levels["tp1"], 4),
-            tp2=round(levels["tp2"], 4),
-            tp3=round(levels["tp3"], 4),
+            entry_min=round(float(levels["entry_min"]), 4),
+            entry_max=round(float(levels["entry_max"]), 4),
+            stop_loss=round(float(levels["stop_loss"]), 4),
+            tp1=round(float(levels["tp1"]), 4),
+            tp2=round(float(levels["tp2"]), 4),
+            tp3=round(float(levels["tp3"]), 4),
             score=score,
             reasons=reasons,
             diagnostics=diagnostics,
