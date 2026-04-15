@@ -41,7 +41,7 @@ async def _send_heartbeat(message: Message, dispatcher: Dispatcher):
     top_symbols = ", ".join(cycle.get("top_signal_symbols", [])) if cycle.get("top_signal_symbols") else "нет"
 
     await message.answer(
-        "💓 Heartbeat\n\n"
+        "💓 Пульс бота\n\n"
         f"Режим: {hb['mode']}\n"
         f"Интервал: {hb['scan_interval']} сек\n"
         f"Открытых сигналов: {hb['open_signals']}\n"
@@ -67,7 +67,7 @@ async def _send_last_signals(message: Message, dispatcher: Dispatcher):
         await message.answer("История сигналов пока пуста.", reply_markup=main_menu_keyboard)
         return
 
-    lines = ["📌 Последние сигналы:\n"]
+    lines = ["📌 Последние сигналы\n"]
     for item in signals:
         lines.append(
             f"{item['symbol']} | {item['direction']} | "
@@ -104,16 +104,16 @@ async def _send_paper_stats(message: Message, dispatcher: Dispatcher):
     stats = await scanner.get_paper_stats()
 
     await message.answer(
-        "🧪 Paper Trading Stats\n\n"
-        f"Start balance: {stats['start_balance']}$\n"
-        f"Current balance: {stats['balance']}$\n"
+        "🧪 Статистика тестовой торговли\n\n"
+        f"Стартовый баланс: {stats['start_balance']}$\n"
+        f"Текущий баланс: {stats['balance']}$\n"
         f"PnL: {stats['pnl_usdt']}$\n"
         f"Total R: {stats['total_r']}\n"
-        f"Total trades: {stats['total_trades']}\n"
-        f"Open trades: {stats['open_trades']}\n"
-        f"Closed trades: {stats['closed_trades']}\n"
-        f"Wins: {stats['wins']}\n"
-        f"Losses: {stats['losses']}\n"
+        f"Всего сделок: {stats['total_trades']}\n"
+        f"Открытых сделок: {stats['open_trades']}\n"
+        f"Закрытых сделок: {stats['closed_trades']}\n"
+        f"Побед: {stats['wins']}\n"
+        f"Поражений: {stats['losses']}\n"
         f"Winrate: {stats['winrate']}%",
         reply_markup=main_menu_keyboard,
     )
@@ -124,21 +124,27 @@ async def _send_open_paper(message: Message, dispatcher: Dispatcher):
     trades = await scanner.get_paper_open_trades()
 
     if not trades:
-        await message.answer("Нет открытых paper-сделок.", reply_markup=main_menu_keyboard)
+        await message.answer("Нет открытых test-сделок.", reply_markup=main_menu_keyboard)
         return
 
-    lines = ["📂 Open Paper Trades\n"]
+    state = await scanner.get_paper_stats()
+    balance = max(float(state["balance"]), 1.0)
+
+    lines = ["📂 Открытые сделки\n"]
     for t in trades[:10]:
-        notional = round(float(t["entry_price"]) * float(t["size"]), 2)
-        state = await scanner.get_paper_stats()
-        balance = max(float(state["balance"]), 1.0)
+        entry_price = float(t["entry_price"])
+        size = float(t["size"])
+        stop_loss = float(t["stop_loss"])
+        risk_amount = float(t["risk_amount"])
+
+        notional = round(entry_price * size, 2)
         effective_leverage = round(notional / balance, 2)
 
         lines.append(
             f"{t['symbol']} | {t['direction']} | {t['signal_type']}\n"
-            f"entry={round(float(t['entry_price']), 6)} | SL={round(float(t['stop_loss']), 6)}\n"
-            f"risk={round(float(t['risk_amount']), 2)}$ | size={round(float(t['size']), 2)}\n"
-            f"notional={notional}$ | eff.leverage={effective_leverage}x\n"
+            f"Вход: {round(entry_price, 6)} | Стоп: {round(stop_loss, 6)}\n"
+            f"Риск: {round(risk_amount, 2)}$ | Размер: {round(size, 2)}\n"
+            f"Объём позиции: {notional}$ | Эфф. плечо: {effective_leverage}x\n"
         )
 
     await message.answer("\n".join(lines), reply_markup=main_menu_keyboard)
@@ -149,10 +155,10 @@ async def _send_paper_history(message: Message, dispatcher: Dispatcher):
     trades = await scanner.get_paper_history(limit=10)
 
     if not trades:
-        await message.answer("История paper-сделок пока пуста.", reply_markup=main_menu_keyboard)
+        await message.answer("История test-сделок пока пуста.", reply_markup=main_menu_keyboard)
         return
 
-    lines = ["📜 Last Closed Paper Trades\n"]
+    lines = ["📜 Последние закрытые сделки\n"]
     for t in trades:
         lines.append(
             f"{t['symbol']} | {t['direction']} | {t['signal_type']} | "
@@ -173,8 +179,14 @@ async def _reset_paper(message: Message):
     assert db.pool is not None
     async with db.pool.acquire() as conn:
         await conn.execute("DELETE FROM paper_trades;")
-        await conn.execute("UPDATE paper_state SET start_balance=10000, balance=10000, risk_per_trade=0.01 WHERE id=1;")
-    await message.answer("🧹 Paper trading сброшен. Новый тест начат с 10 000$.", reply_markup=main_menu_keyboard)
+        await conn.execute(
+            "UPDATE paper_state SET start_balance=10000, balance=10000, risk_per_trade=0.01 WHERE id=1;"
+        )
+
+    await message.answer(
+        "🧹 Paper trading сброшен.\nНовый тест начат с 10 000$.",
+        reply_markup=main_menu_keyboard,
+    )
 
 
 @router.message(Command("start"))
@@ -237,46 +249,46 @@ async def button_status(message: Message):
     await _send_status(message)
 
 
-@router.message(lambda message: message.text == "💓 Heartbeat")
+@router.message(lambda message: message.text == "💓 Пульс")
 async def button_heartbeat(message: Message, dispatcher: Dispatcher):
     await _send_heartbeat(message, dispatcher)
 
 
-@router.message(lambda message: message.text == "⚙️ Mode")
+@router.message(lambda message: message.text == "⚙️ Настройки")
 async def button_mode(message: Message):
     await _send_mode(message)
 
 
-@router.message(lambda message: message.text == "📌 Last signals")
+@router.message(lambda message: message.text == "📌 Последние сигналы")
 async def button_last_signals(message: Message, dispatcher: Dispatcher):
     await _send_last_signals(message, dispatcher)
 
 
-@router.message(lambda message: message.text == "📈 Signal stats")
+@router.message(lambda message: message.text == "📈 Статистика сигналов")
 async def button_signal_stats(message: Message, dispatcher: Dispatcher):
     await _send_signal_stats(message, dispatcher)
 
 
-@router.message(lambda message: message.text == "🧪 Paper stats")
+@router.message(lambda message: message.text == "🧪 Статистика paper")
 async def button_paper_stats(message: Message, dispatcher: Dispatcher):
     await _send_paper_stats(message, dispatcher)
 
 
-@router.message(lambda message: message.text == "📂 Open paper")
+@router.message(lambda message: message.text == "📂 Открытые сделки")
 async def button_open_paper(message: Message, dispatcher: Dispatcher):
     await _send_open_paper(message, dispatcher)
 
 
-@router.message(lambda message: message.text == "📜 Paper history")
+@router.message(lambda message: message.text == "📜 История сделок")
 async def button_paper_history(message: Message, dispatcher: Dispatcher):
     await _send_paper_history(message, dispatcher)
 
 
-@router.message(lambda message: message.text == "🔄 Scan now")
+@router.message(lambda message: message.text == "🔄 Анализ рынка")
 async def button_scan_now(message: Message, dispatcher: Dispatcher):
     await _run_manual_scan(message, dispatcher)
 
 
-@router.message(lambda message: message.text == "🧹 Reset paper")
+@router.message(lambda message: message.text == "🧹 Сбросить paper")
 async def button_reset_paper(message: Message):
     await _reset_paper(message)
