@@ -14,6 +14,7 @@ from services.indicators import (
     atr_ratio,
 )
 from services.structure_engine import StructureEngine
+from services.market_regime import MarketRegimeAnalyzer
 
 
 @dataclass
@@ -43,6 +44,7 @@ class SignalCheckResult:
 class SignalEngine:
     def __init__(self):
         self.structure_engine = StructureEngine()
+        self.regime_analyzer = MarketRegimeAnalyzer()
 
     def prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -95,6 +97,116 @@ class SignalEngine:
             "support_gap": round(float(support_gap), 6) if support_gap is not None else None,
         }
 
+
+    def _candle_metrics(self, row: pd.Series) -> dict:
+        open_ = float(row["open"])
+        close = float(row["close"])
+        high = float(row["high"])
+        low = float(row["low"])
+
+        total_range = max(high - low, 1e-9)
+        body = abs(close - open_)
+        upper_wick = high - max(open_, close)
+        lower_wick = min(open_, close) - low
+
+        return {
+            "body_ratio": body / total_range,
+            "upper_wick_ratio": upper_wick / total_range,
+            "lower_wick_ratio": lower_wick / total_range,
+            "is_bull": close > open_,
+            "is_bear": close < open_,
+        }
+
+    def _check_regime_filters(self, setup_direction: str, htf_df: pd.DataFrame, mtf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> tuple[bool, str, dict]:
+        htf_regime = self.regime_analyzer.detect_regime(htf_df)
+        mtf_regime = self.regime_analyzer.detect_regime(mtf_df)
+        ltf_regime = self.regime_analyzer.detect_regime(ltf_df)
+
+        regime_diag = {
+            "htf_regime": htf_regime.regime,
+            "htf_regime_dir": htf_regime.direction,
+            "mtf_regime": mtf_regime.regime,
+            "mtf_regime_dir": mtf_regime.direction,
+            "ltf_regime": ltf_regime.regime,
+            "ltf_regime_dir": ltf_regime.direction,
+        }
+
+        if htf_regime.is_ranging or mtf_regime.is_ranging:
+            return False, "market regime: 4h/1h боковик", regime_diag
+
+        if htf_regime.is_overextended or mtf_regime.is_overextended or ltf_regime.is_overextended:
+            return False, "market regime: рынок перерастянут, вход поздний", regime_diag
+
+        if htf_regime.reversal_risk or mtf_regime.reversal_risk:
+            return False, "market regime: высокий риск разворота", regime_diag
+
+        wanted_dir = "LONG" if setup_direction == "LONG" else "SHORT"
+        allowed_dirs = {wanted_dir, "NONE"}
+
+        if htf_regime.direction not in allowed_dirs:
+            return False, "market regime: 4h направление против сигнала", regime_diag
+
+        if mtf_regime.direction not in allowed_dirs:
+            return False, "market regime: 1h направление против сигнала", regime_diag
+
+        if not htf_regime.is_trending:
+            return False, "market regime: 4h не подтверждает тренд", regime_diag
+
+        return True, "", regime_diag
+
+    def _check_entry_quality(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
+        last = self._closed(ltf_df)
+        prev = self._prev_closed(ltf_df)
+
+        last_close = float(last["close"])
+        ema20 = float(last["ema20"])
+        ema50 = float(last["ema50"])
+        atr = float(last["atr"]) if pd.notna(last["atr"]) else 0.0
+        resistance = last["resistance"]
+        support = last["support"]
+
+        if atr <= 0:
+            return False, "entry quality: ATR невалиден"
+
+        dist_ema20 = abs(last_close - ema20) / last_close if last_close else 0.0
+        dist_ema50 = abs(last_close - ema50) / last_close if last_close else 0.0
+
+        if dist_ema20 > Config.MAX_CHASE_DISTANCE_FROM_EMA20 and dist_ema50 > Config.MAX_CHASE_DISTANCE_FROM_EMA50:
+            return False, "entry quality: вход слишком далеко от EMA, уже chase"
+
+        last_candle = self._candle_metrics(last)
+        prev_candle = self._candle_metrics(prev)
+        body_vs_atr = abs(float(last["close"]) - float(last["open"])) / atr if atr > 0 else 0.0
+
+        if body_vs_atr >= Config.MAX_ENTRY_BODY_ATR:
+            return False, "entry quality: вход в слишком импульсную свечу"
+
+        if direction == "LONG":
+            if last_candle["upper_wick_ratio"] >= Config.MAX_BAD_WICK_RATIO and last_candle["body_ratio"] <= 0.55:
+                return False, "entry quality: сильный верхний фитиль, продавец давит LONG"
+
+            if not (last_candle["is_bull"] or (prev_candle["is_bull"] and float(last["low"]) >= min(float(prev["open"]), float(prev["close"])) )):
+                return False, "entry quality: нет нормального подтверждения покупателей"
+
+            if pd.notna(resistance):
+                resistance_gap = (float(resistance) - last_close) / last_close
+                if resistance_gap < Config.HARD_MIN_RESISTANCE_GAP:
+                    return False, "entry quality: слишком близко сопротивление"
+
+        else:
+            if last_candle["lower_wick_ratio"] >= Config.MAX_BAD_WICK_RATIO and last_candle["body_ratio"] <= 0.55:
+                return False, "entry quality: сильный нижний фитиль, покупатель давит SHORT"
+
+            if not (last_candle["is_bear"] or (prev_candle["is_bear"] and float(last["high"]) <= max(float(prev["open"]), float(prev["close"])))):
+                return False, "entry quality: нет нормального подтверждения продавцов"
+
+            if pd.notna(support):
+                support_gap = (last_close - float(support)) / last_close
+                if support_gap < Config.HARD_MIN_SUPPORT_GAP:
+                    return False, "entry quality: слишком близко поддержка"
+
+        return True, ""
+
     def _check_structure_setup(
         self,
         htf_df: pd.DataFrame,
@@ -110,7 +222,7 @@ class SignalEngine:
         if last["atr_ratio"] < Config.MIN_ATR_RATIO_15M:
             return False, "15m слишком вялый"
 
-        if last["quote_volume_ratio"] < Config.MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO:
+        if last["quote_volume_ratio"] < Config.MIN_CONFIRMATION_VOLUME_RATIO:
             return False, "15m денежный объём слишком слабый"
 
         if direction == "LONG":
@@ -387,12 +499,31 @@ class SignalEngine:
                 diagnostics=diagnostics,
             )
 
+        regime_ok, regime_reason, regime_diag = self._check_regime_filters(setup.direction, htf_df, mtf_df, ltf_df)
+        diagnostics.update(regime_diag)
+        if not regime_ok:
+            return SignalCheckResult(
+                symbol=symbol,
+                signal=None,
+                skip_reason=regime_reason,
+                diagnostics=diagnostics,
+            )
+
         confirm_ok, confirm_reason = self._check_confirmation(setup.direction, ltf_df)
         if not confirm_ok:
             return SignalCheckResult(
                 symbol=symbol,
                 signal=None,
                 skip_reason=confirm_reason,
+                diagnostics=diagnostics,
+            )
+
+        entry_ok, entry_reason = self._check_entry_quality(setup.direction, ltf_df)
+        if not entry_ok:
+            return SignalCheckResult(
+                symbol=symbol,
+                signal=None,
+                skip_reason=entry_reason,
                 diagnostics=diagnostics,
             )
 
