@@ -46,6 +46,10 @@ class SignalEngine:
         self.structure_engine = StructureEngine()
         self.regime_analyzer = MarketRegimeAnalyzer()
 
+    # =========================================================
+    # PREPARE DATA
+    # =========================================================
+
     def prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
@@ -61,8 +65,15 @@ class SignalEngine:
         df["atr_ratio"] = atr_ratio(df, Config.ATR_PERIOD)
         df["support"], df["resistance"] = add_support_resistance(df, 30, 2)
 
-        df["quote_volume_avg_20"] = df["quote_asset_volume"].rolling(window=20).mean()
-        df["quote_volume_ratio"] = df["quote_asset_volume"] / df["quote_volume_avg_20"]
+        # Денежный объем
+        if "quote_asset_volume" in df.columns:
+            df["quote_volume_avg_20"] = df["quote_asset_volume"].rolling(window=20).mean()
+            df["quote_volume_ratio"] = df["quote_asset_volume"] / df["quote_volume_avg_20"]
+        else:
+            # запасной вариант
+            df["quote_asset_volume"] = df["close"] * df["volume"]
+            df["quote_volume_avg_20"] = df["quote_asset_volume"].rolling(window=20).mean()
+            df["quote_volume_ratio"] = df["quote_asset_volume"] / df["quote_volume_avg_20"]
 
         return df
 
@@ -71,6 +82,10 @@ class SignalEngine:
 
     def _prev_closed(self, df: pd.DataFrame) -> pd.Series:
         return df.iloc[-3]
+
+    # =========================================================
+    # DIAGNOSTICS
+    # =========================================================
 
     def _build_diagnostics(self, htf_df: pd.DataFrame, mtf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> dict:
         htf_last = self._closed(htf_df)
@@ -97,7 +112,6 @@ class SignalEngine:
             "support_gap": round(float(support_gap), 6) if support_gap is not None else None,
         }
 
-
     def _candle_metrics(self, row: pd.Series) -> dict:
         open_ = float(row["open"])
         close = float(row["close"])
@@ -117,7 +131,17 @@ class SignalEngine:
             "is_bear": close < open_,
         }
 
-    def _check_regime_filters(self, setup_direction: str, htf_df: pd.DataFrame, mtf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> tuple[bool, str, dict]:
+    # =========================================================
+    # REGIME FILTERS
+    # =========================================================
+
+    def _check_regime_filters(
+        self,
+        setup_direction: str,
+        htf_df: pd.DataFrame,
+        mtf_df: pd.DataFrame,
+        ltf_df: pd.DataFrame,
+    ) -> tuple[bool, str, dict]:
         htf_regime = self.regime_analyzer.detect_regime(htf_df)
         mtf_regime = self.regime_analyzer.detect_regime(mtf_df)
         ltf_regime = self.regime_analyzer.detect_regime(ltf_df)
@@ -131,28 +155,43 @@ class SignalEngine:
             "ltf_regime_dir": ltf_regime.direction,
         }
 
-        if htf_regime.is_ranging or mtf_regime.is_ranging:
-            return False, "market regime: 4h/1h боковик", regime_diag
+        # 4H range — жёсткий запрет
+        if htf_regime.is_ranging:
+            return False, "market regime: 4h боковик", regime_diag
 
-        if htf_regime.is_overextended or mtf_regime.is_overextended or ltf_regime.is_overextended:
-            return False, "market regime: рынок перерастянут, вход поздний", regime_diag
+        # 1H range допустим только если 4H трендовый.
+        # Поэтому тут НЕ режем просто по mtf_regime.is_ranging.
 
-        if htf_regime.reversal_risk or mtf_regime.reversal_risk:
-            return False, "market regime: высокий риск разворота", regime_diag
+        if htf_regime.is_overextended:
+            return False, "market regime: 4h рынок перерастянут", regime_diag
+
+        if mtf_regime.is_overextended and ltf_regime.is_overextended:
+            return False, "market regime: 1h/15m рынок перерастянут, вход поздний", regime_diag
+
+        if htf_regime.reversal_risk:
+            return False, "market regime: высокий риск разворота на 4h", regime_diag
+
+        if mtf_regime.reversal_risk and htf_regime.direction != setup_direction:
+            return False, "market regime: высокий риск разворота на 1h", regime_diag
 
         wanted_dir = "LONG" if setup_direction == "LONG" else "SHORT"
-        allowed_dirs = {wanted_dir, "NONE"}
 
-        if htf_regime.direction not in allowed_dirs:
+        if htf_regime.direction not in {wanted_dir, "NONE"}:
             return False, "market regime: 4h направление против сигнала", regime_diag
 
-        if mtf_regime.direction not in allowed_dirs:
+        # 1H делаем мягче:
+        # если 1H уже строго в другую сторону — skip
+        if mtf_regime.direction not in {wanted_dir, "NONE"}:
             return False, "market regime: 1h направление против сигнала", regime_diag
 
         if not htf_regime.is_trending:
             return False, "market regime: 4h не подтверждает тренд", regime_diag
 
         return True, "", regime_diag
+
+    # =========================================================
+    # ENTRY QUALITY
+    # =========================================================
 
     def _check_entry_quality(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
         last = self._closed(ltf_df)
@@ -171,7 +210,11 @@ class SignalEngine:
         dist_ema20 = abs(last_close - ema20) / last_close if last_close else 0.0
         dist_ema50 = abs(last_close - ema50) / last_close if last_close else 0.0
 
-        if dist_ema20 > Config.MAX_CHASE_DISTANCE_FROM_EMA20 and dist_ema50 > Config.MAX_CHASE_DISTANCE_FROM_EMA50:
+        # chase-фильтр: только если и от EMA20, и от EMA50 далеко
+        if (
+            dist_ema20 > Config.MAX_CHASE_DISTANCE_FROM_EMA20
+            and dist_ema50 > Config.MAX_CHASE_DISTANCE_FROM_EMA50
+        ):
             return False, "entry quality: вход слишком далеко от EMA, уже chase"
 
         last_candle = self._candle_metrics(last)
@@ -182,10 +225,20 @@ class SignalEngine:
             return False, "entry quality: вход в слишком импульсную свечу"
 
         if direction == "LONG":
-            if last_candle["upper_wick_ratio"] >= Config.MAX_BAD_WICK_RATIO and last_candle["body_ratio"] <= 0.55:
+            if (
+                last_candle["upper_wick_ratio"] >= Config.MAX_BAD_WICK_RATIO
+                and last_candle["body_ratio"] <= 0.55
+            ):
                 return False, "entry quality: сильный верхний фитиль, продавец давит LONG"
 
-            if not (last_candle["is_bull"] or (prev_candle["is_bull"] and float(last["low"]) >= min(float(prev["open"]), float(prev["close"])) )):
+            # мягкое подтверждение покупателя
+            if not (
+                last_candle["is_bull"]
+                or (
+                    prev_candle["is_bull"]
+                    and float(last["low"]) >= min(float(prev["open"]), float(prev["close"]))
+                )
+            ):
                 return False, "entry quality: нет нормального подтверждения покупателей"
 
             if pd.notna(resistance):
@@ -194,10 +247,20 @@ class SignalEngine:
                     return False, "entry quality: слишком близко сопротивление"
 
         else:
-            if last_candle["lower_wick_ratio"] >= Config.MAX_BAD_WICK_RATIO and last_candle["body_ratio"] <= 0.55:
+            if (
+                last_candle["lower_wick_ratio"] >= Config.MAX_BAD_WICK_RATIO
+                and last_candle["body_ratio"] <= 0.55
+            ):
                 return False, "entry quality: сильный нижний фитиль, покупатель давит SHORT"
 
-            if not (last_candle["is_bear"] or (prev_candle["is_bear"] and float(last["high"]) <= max(float(prev["open"]), float(prev["close"])))):
+            # мягкое подтверждение продавца
+            if not (
+                last_candle["is_bear"]
+                or (
+                    prev_candle["is_bear"]
+                    and float(last["high"]) <= max(float(prev["open"]), float(prev["close"]))
+                )
+            ):
                 return False, "entry quality: нет нормального подтверждения продавцов"
 
             if pd.notna(support):
@@ -207,6 +270,10 @@ class SignalEngine:
 
         return True, ""
 
+    # =========================================================
+    # SETUP CHECK
+    # =========================================================
+
     def _check_structure_setup(
         self,
         htf_df: pd.DataFrame,
@@ -214,6 +281,10 @@ class SignalEngine:
         ltf_df: pd.DataFrame,
     ):
         return self.structure_engine.detect_setup(htf_df, mtf_df, ltf_df)
+
+    # =========================================================
+    # CONFIRMATION
+    # =========================================================
 
     def _check_confirmation(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
         last = self._closed(ltf_df)
@@ -252,6 +323,10 @@ class SignalEngine:
 
         return True, ""
 
+    # =========================================================
+    # SCORE
+    # =========================================================
+
     def calculate_score(
         self,
         setup_type: str,
@@ -273,19 +348,19 @@ class SignalEngine:
             reasons.append("структура рынка смотрит вверх")
 
             if setup_type == "PULLBACK_CONTINUATION":
-                score += 1.5
+                score += 1.6
                 reasons.append("сетап: continuation after pullback")
 
             if setup_type == "BREAKOUT_RETEST":
-                score += 1.3
+                score += 1.2
                 reasons.append("сетап: breakout + retest вверх")
 
             if htf_last["ema_fast"] > htf_last["ema_slow"]:
                 score += 0.8
-                reasons.append("EMA 50 выше EMA 200 на 4h")
+                reasons.append("EMA fast выше slow на 4h")
 
             if htf_last["adx"] >= Config.MIN_ADX_4H:
-                score += 0.7
+                score += 0.8
                 reasons.append("4h ADX подтверждает силу тренда")
 
             if mtf_last["adx"] >= Config.MIN_ADX_1H:
@@ -297,7 +372,7 @@ class SignalEngine:
                 reasons.append("15m удерживает рабочую зону")
 
             if 48 <= ltf_last["rsi"] <= 60:
-                score += 0.9
+                score += 1.0
                 reasons.append("RSI в нормальной зоне LONG")
             elif 60 < ltf_last["rsi"] <= Config.LONG_MAX_RSI_ENTRY:
                 score += 0.3
@@ -314,11 +389,14 @@ class SignalEngine:
             if ltf_last["quote_volume_ratio"] >= 1.0:
                 score += 0.8
                 reasons.append("объём на 15m не слабый")
+            elif ltf_last["quote_volume_ratio"] >= 0.8:
+                score += 0.4
+                reasons.append("объём на 15m допустимый")
 
             if pd.notna(ltf_last["support"]):
                 gap = (ltf_last["close"] - ltf_last["support"]) / ltf_last["close"]
                 if 0 < gap <= 0.018:
-                    score += 0.6
+                    score += 0.5
                     reasons.append("рядом поддержка")
 
         else:
@@ -326,19 +404,19 @@ class SignalEngine:
             reasons.append("структура рынка смотрит вниз")
 
             if setup_type == "PULLBACK_CONTINUATION":
-                score += 1.5
+                score += 1.6
                 reasons.append("сетап: continuation after pullback")
 
             if setup_type == "BREAKOUT_RETEST":
-                score += 1.3
+                score += 1.2
                 reasons.append("сетап: breakout + retest вниз")
 
             if htf_last["ema_fast"] < htf_last["ema_slow"]:
                 score += 0.8
-                reasons.append("EMA 50 ниже EMA 200 на 4h")
+                reasons.append("EMA fast ниже slow на 4h")
 
             if htf_last["adx"] >= Config.MIN_ADX_4H:
-                score += 0.7
+                score += 0.8
                 reasons.append("4h ADX подтверждает силу тренда")
 
             if mtf_last["adx"] >= Config.MIN_ADX_1H:
@@ -350,7 +428,7 @@ class SignalEngine:
                 reasons.append("15m удерживает рабочую зону")
 
             if Config.SHORT_MIN_RSI_ENTRY <= ltf_last["rsi"] <= 52:
-                score += 0.9
+                score += 1.0
                 reasons.append("RSI в нормальной зоне SHORT")
             elif 52 < ltf_last["rsi"] <= 56:
                 score += 0.3
@@ -367,14 +445,21 @@ class SignalEngine:
             if ltf_last["quote_volume_ratio"] >= 1.0:
                 score += 0.8
                 reasons.append("объём на 15m не слабый")
+            elif ltf_last["quote_volume_ratio"] >= 0.8:
+                score += 0.4
+                reasons.append("объём на 15m допустимый")
 
             if pd.notna(ltf_last["resistance"]):
                 gap = (ltf_last["resistance"] - ltf_last["close"]) / ltf_last["close"]
                 if 0 < gap <= 0.018:
-                    score += 0.6
+                    score += 0.5
                     reasons.append("рядом сопротивление")
 
         return round(score, 1), reasons
+
+    # =========================================================
+    # LEVELS
+    # =========================================================
 
     def build_trade_levels(self, direction: str, ltf_df: pd.DataFrame):
         last = self._closed(ltf_df)
@@ -409,15 +494,15 @@ class SignalEngine:
             if risk <= 0:
                 return None
 
-            tp1 = entry_max + risk * 1.6
-            tp2 = entry_max + risk * 2.3
-            tp3 = entry_max + risk * 3.0
+            tp1 = entry_max + risk * 1.2
+            tp2 = entry_max + risk * 1.8
+            tp3 = entry_max + risk * 2.5
 
             rr = (tp1 - entry_max) / risk
 
             if pd.notna(resistance):
-                resistance = float(resistance)
-                if resistance <= entry_max:
+                resistance_val = float(resistance)
+                if resistance_val <= entry_max:
                     return None
 
         else:
@@ -439,15 +524,15 @@ class SignalEngine:
             if risk <= 0:
                 return None
 
-            tp1 = entry_min - risk * 1.6
-            tp2 = entry_min - risk * 2.3
-            tp3 = entry_min - risk * 3.0
+            tp1 = entry_min - risk * 1.2
+            tp2 = entry_min - risk * 1.8
+            tp3 = entry_min - risk * 2.5
 
             rr = (entry_min - tp1) / risk
 
             if pd.notna(support):
-                support = float(support)
-                if support >= entry_min:
+                support_val = float(support)
+                if support_val >= entry_min:
                     return None
 
         return {
@@ -460,6 +545,10 @@ class SignalEngine:
             "rr": rr,
         }
 
+    # =========================================================
+    # CLASSIFY
+    # =========================================================
+
     def classify_signal(self, score: float, rr: float) -> Optional[str]:
         if score >= Config.STRONG_MIN_SCORE and rr >= Config.STRONG_MIN_RR:
             return "STRONG"
@@ -468,6 +557,10 @@ class SignalEngine:
             return "SETUP"
 
         return None
+
+    # =========================================================
+    # MAIN ANALYZE
+    # =========================================================
 
     def analyze_symbol(
         self,
@@ -499,7 +592,12 @@ class SignalEngine:
                 diagnostics=diagnostics,
             )
 
-        regime_ok, regime_reason, regime_diag = self._check_regime_filters(setup.direction, htf_df, mtf_df, ltf_df)
+        regime_ok, regime_reason, regime_diag = self._check_regime_filters(
+            setup.direction,
+            htf_df,
+            mtf_df,
+            ltf_df,
+        )
         diagnostics.update(regime_diag)
         if not regime_ok:
             return SignalCheckResult(
