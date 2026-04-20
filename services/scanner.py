@@ -7,6 +7,7 @@ from uuid import uuid4
 from aiogram import Bot
 
 from config import Config
+from services.btc_filter import BTCFilter
 from services.market_data import BinanceFuturesClient
 from services.news_guard import NewsGuard
 from services.paper_trader import PaperTrader
@@ -29,6 +30,7 @@ class MarketScanner:
         self.signal_log = SignalLogStore()
         self.trade_tracker = TradeTracker()
         self.paper = PaperTrader()
+        self.btc_filter = BTCFilter()
         self._scan_lock = asyncio.Lock()
 
         self.last_cycle_info = {
@@ -39,6 +41,7 @@ class MarketScanner:
             "news_block": False,
             "news_reason": "unknown",
             "sentiment": "NEUTRAL",
+            "btc_bias": "NEUTRAL",
             "skip_summary": {},
             "top_signal_symbols": [],
         }
@@ -246,6 +249,7 @@ class MarketScanner:
             return ""
 
         parts = []
+
         for label, key in [
             ("ADX4h", "htf_adx"),
             ("ADX1h", "mtf_adx"),
@@ -256,6 +260,7 @@ class MarketScanner:
             ("RR", "rr"),
             ("ResGap", "resistance_gap"),
             ("SupGap", "support_gap"),
+            ("BTC", "btc_bias"),
             ("Setup", "setup_type"),
         ]:
             value = diagnostics.get(key)
@@ -304,8 +309,21 @@ class MarketScanner:
                     f"[PAPER CLOSED] {trade.symbol} {trade.direction} {trade.close_reason} | "
                     f"type={trade.signal_type} | result={trade.result_usdt}$ | R={trade.result_r}"
                 )
+
         except Exception as error:
             logger.exception(f"[PAPER UPDATE ERROR] {symbol} | {error}")
+
+    async def _get_btc_bias(self) -> str:
+        try:
+            btc_df = await self.client.get_klines("BTCUSDT", Config.LTF_INTERVAL, Config.KLINES_LIMIT)
+            if len(btc_df) < 60:
+                return "NEUTRAL"
+
+            btc_df = self.engine.prepare_dataframe(btc_df)
+            return self.btc_filter.get_bias(btc_df)
+        except Exception as error:
+            logger.exception(f"[BTC FILTER ERROR] {error}")
+            return "NEUTRAL"
 
     async def scan_market(self, bot: Bot, send_to_telegram: bool = True) -> List[SignalCheckResult]:
         async with self._scan_lock:
@@ -313,11 +331,12 @@ class MarketScanner:
 
             cycle_started_at = datetime.utcnow().isoformat()
             news_decision = await self.news_guard.evaluate_market()
+            btc_bias = await self._get_btc_bias()
 
             logger.info(
                 f"Старт сканирования рынка... режим={Config.STRATEGY_MODE} | "
                 f"news_block={news_decision.blocked} | sentiment={news_decision.sentiment_bias} | "
-                f"news_reason={news_decision.reason}"
+                f"news_reason={news_decision.reason} | btc_bias={btc_bias}"
             )
 
             if news_decision.blocked:
@@ -329,6 +348,7 @@ class MarketScanner:
                     "news_block": True,
                     "news_reason": news_decision.reason,
                     "sentiment": news_decision.sentiment_bias,
+                    "btc_bias": btc_bias,
                     "skip_summary": {"news block": 1},
                     "top_signal_symbols": [],
                 }
@@ -360,6 +380,18 @@ class MarketScanner:
                     result = self.engine.analyze_symbol(symbol, htf_df, mtf_df, ltf_df)
 
                     if result.signal:
+                        result.signal.diagnostics["btc_bias"] = btc_bias
+
+                        allow_btc, btc_reason = self.btc_filter.allow_trade(result.signal.direction, btc_bias)
+                        if not allow_btc:
+                            result = SignalCheckResult(
+                                symbol=symbol,
+                                signal=None,
+                                skip_reason=btc_reason,
+                                diagnostics=result.signal.diagnostics,
+                            )
+
+                    if result.signal:
                         if news_decision.sentiment_bias == "BEARISH" and result.signal.direction == "LONG":
                             result.signal.score = round(result.signal.score - 0.7, 1)
                             result.signal.reasons.append("news guard: bearish headlines reduce LONG confidence")
@@ -377,6 +409,9 @@ class MarketScanner:
                             f"{self._format_diag(result.signal.diagnostics)}"
                         )
                     else:
+                        if "btc_bias" not in result.diagnostics:
+                            result.diagnostics["btc_bias"] = btc_bias
+
                         skip_counter[result.skip_reason] += 1
                         logger.info(
                             f"[SKIP] {symbol} | Причина: {result.skip_reason}"
@@ -443,6 +478,7 @@ class MarketScanner:
                 "news_block": False,
                 "news_reason": news_decision.reason,
                 "sentiment": news_decision.sentiment_bias,
+                "btc_bias": btc_bias,
                 "skip_summary": dict(skip_counter),
                 "top_signal_symbols": [s.symbol for s in top_signals],
             }
