@@ -76,6 +76,9 @@ class MarketRegimeAnalyzer:
         bullish_alignment = close_price > ema20 > ema50 > ema200 if ema200 > 0 else False
         bearish_alignment = close_price < ema20 < ema50 < ema200 if ema200 > 0 else False
 
+        almost_bullish_alignment = close_price > ema20 and ema20 > ema50
+        almost_bearish_alignment = close_price < ema20 and ema20 < ema50
+
         is_trending = False
         is_ranging = False
         is_impulsive = False
@@ -87,23 +90,31 @@ class MarketRegimeAnalyzer:
         score = 0.0
         reason = "неопределённый режим"
 
-        # 1. Trend detection
-        if structure_report.trend == "UP" and bullish_alignment and adx >= 18:
+        # 1. Trend detection — мягче
+        if (
+            structure_report.trend == "UP"
+            and (bullish_alignment or almost_bullish_alignment)
+            and adx >= 14
+        ):
             is_trending = True
             direction = "LONG"
             regime = "TREND"
             score += 2.0
             reason = "восходящий тренд: структура + EMA alignment + ADX"
 
-        elif structure_report.trend == "DOWN" and bearish_alignment and adx >= 18:
+        elif (
+            structure_report.trend == "DOWN"
+            and (bearish_alignment or almost_bearish_alignment)
+            and adx >= 14
+        ):
             is_trending = True
             direction = "SHORT"
             regime = "TREND"
             score += 2.0
             reason = "нисходящий тренд: структура + EMA alignment + ADX"
 
-        # 2. Range detection
-        if structure_report.trend == "RANGE" or adx < 16:
+        # 2. Range detection — немного мягче
+        if structure_report.trend == "RANGE" or adx < 12:
             is_ranging = True
             regime = "RANGE"
             direction = "NONE"
@@ -111,11 +122,11 @@ class MarketRegimeAnalyzer:
             reason = "боковик: слабая структура или низкий ADX"
 
         # 3. Impulse detection
-        strong_body = body_vs_atr >= 0.9
-        strong_atr = atr_ratio >= 0.004
-        strong_volume = volume_ratio >= 1.2
-        fast_move_up = close_price > prev_close and rsi >= 55
-        fast_move_down = close_price < prev_close and rsi <= 45
+        strong_body = body_vs_atr >= 0.85
+        strong_atr = atr_ratio >= 0.0035
+        strong_volume = volume_ratio >= 1.05
+        fast_move_up = close_price > prev_close and rsi >= 53
+        fast_move_down = close_price < prev_close and rsi <= 47
 
         if strong_body and strong_atr and strong_volume:
             if fast_move_up and direction in ["LONG", "NONE"]:
@@ -132,32 +143,32 @@ class MarketRegimeAnalyzer:
                 score = max(score, 3.0)
                 reason = "сильный медвежий импульс: тело свечи + ATR expansion + объём"
 
-        # 4. Overextended detection
-        too_far_from_mean = distance_from_ema20 >= 0.012 or distance_from_ema50 >= 0.02
+        # 4. Overextended detection — чуть мягче к рынку
+        too_far_from_mean = distance_from_ema20 >= 0.016 or distance_from_ema50 >= 0.026
 
         if direction == "LONG":
-            if rsi >= 64 and too_far_from_mean:
+            if rsi >= 69 and too_far_from_mean:
                 is_overextended = True
                 regime = "OVEREXTENDED"
                 score = max(score, 3.2)
                 reason = "рынок перегрет вверх: RSI высокий и цена далеко от EMA"
 
         elif direction == "SHORT":
-            if rsi <= 36 and too_far_from_mean:
+            if rsi <= 31 and too_far_from_mean:
                 is_overextended = True
                 regime = "OVEREXTENDED"
                 score = max(score, 3.2)
                 reason = "рынок перегрет вниз: RSI низкий и цена далеко от EMA"
 
-        # 5. Reversal risk
-        if structure_report.choch == "BEARISH" and (rsi >= 58 or close_price < ema20):
+        # 5. Reversal risk — не так агрессивно
+        if structure_report.choch == "BEARISH" and (rsi >= 62 or close_price < ema20):
             reversal_risk = True
             regime = "REVERSAL_RISK"
             direction = "SHORT"
             score = max(score, 3.5)
             reason = "риск разворота вниз: bearish CHOCH + ослабление цены"
 
-        elif structure_report.choch == "BULLISH" and (rsi <= 42 or close_price > ema20):
+        elif structure_report.choch == "BULLISH" and (rsi <= 38 or close_price > ema20):
             reversal_risk = True
             regime = "REVERSAL_RISK"
             direction = "LONG"

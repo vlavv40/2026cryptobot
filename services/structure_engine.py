@@ -113,29 +113,45 @@ class StructureEngine:
         mtf_structure = self.detect_market_structure(mtf_df)
 
         ltf_last = ltf_df.iloc[-2]
+        ltf_prev = ltf_df.iloc[-3]
 
+        close_ = float(ltf_last["close"])
+        ema20 = float(ltf_last["ema20"])
+        ema50 = float(ltf_last["ema50"])
+        prev_close = float(ltf_prev["close"])
+
+        # LONG
         if htf_structure.trend == "UP":
             pullback_ok = (
-                ltf_last["close"] >= ltf_last["ema20"]
-                or ltf_last["close"] >= ltf_last["ema50"]
+                close_ >= ema20
+                or close_ >= ema50
+                or (close_ >= ema20 * 0.995)
             )
-            if mtf_structure.trend in ["UP", "RANGE"] and pullback_ok:
+
+            momentum_hint = close_ >= prev_close
+
+            if mtf_structure.trend in ["UP", "RANGE"] and pullback_ok and momentum_hint:
                 return SetupContext(
                     setup_type="PULLBACK_CONTINUATION",
                     direction="LONG",
-                    reason="восходящая структура + откат без слома тренда",
+                    reason="восходящая структура + мягкий откат без слома тренда",
                 )
 
+        # SHORT
         if htf_structure.trend == "DOWN":
             pullback_ok = (
-                ltf_last["close"] <= ltf_last["ema20"]
-                or ltf_last["close"] <= ltf_last["ema50"]
+                close_ <= ema20
+                or close_ <= ema50
+                or (close_ <= ema20 * 1.005)
             )
-            if mtf_structure.trend in ["DOWN", "RANGE"] and pullback_ok:
+
+            momentum_hint = close_ <= prev_close
+
+            if mtf_structure.trend in ["DOWN", "RANGE"] and pullback_ok and momentum_hint:
                 return SetupContext(
                     setup_type="PULLBACK_CONTINUATION",
                     direction="SHORT",
-                    reason="нисходящая структура + откат без слома тренда",
+                    reason="нисходящая структура + мягкий откат без слома тренда",
                 )
 
         return SetupContext(
@@ -161,26 +177,34 @@ class StructureEngine:
         ltf_last = ltf_df.iloc[-2]
         ltf_prev = ltf_df.iloc[-3]
 
+        ltf_close = float(ltf_last["close"])
+        ltf_low = float(ltf_last["low"])
+        ltf_high = float(ltf_last["high"])
+        prev_close = float(ltf_prev["close"])
+
+        tolerance_up = range_high * 0.0025
+        tolerance_down = range_low * 0.0025
+
         broke_up = float(mtf_last["close"]) > range_high
-        retest_up = float(ltf_last["low"]) <= range_high and float(ltf_last["close"]) >= range_high
-        strength_up = float(ltf_last["close"]) > float(ltf_prev["close"])
+        retest_up = ltf_low <= (range_high + tolerance_up) and ltf_close >= (range_high - tolerance_up)
+        strength_up = ltf_close >= prev_close
 
         if broke_up and retest_up and strength_up:
             return SetupContext(
                 setup_type="BREAKOUT_RETEST",
                 direction="LONG",
-                reason="пробой диапазона вверх + ретест уровня",
+                reason="пробой диапазона вверх + мягкий ретест уровня",
             )
 
         broke_down = float(mtf_last["close"]) < range_low
-        retest_down = float(ltf_last["high"]) >= range_low and float(ltf_last["close"]) <= range_low
-        strength_down = float(ltf_last["close"]) < float(ltf_prev["close"])
+        retest_down = ltf_high >= (range_low - tolerance_down) and ltf_close <= (range_low + tolerance_down)
+        strength_down = ltf_close <= prev_close
 
         if broke_down and retest_down and strength_down:
             return SetupContext(
                 setup_type="BREAKOUT_RETEST",
                 direction="SHORT",
-                reason="пробой диапазона вниз + ретест уровня",
+                reason="пробой диапазона вниз + мягкий ретест уровня",
             )
 
         return SetupContext(

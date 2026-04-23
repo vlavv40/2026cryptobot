@@ -35,15 +35,9 @@ class Config:
     # SCANNER
     # =========================================================
     SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
-
-    # было 2, ставим выше чтобы видеть больше рынка
     MAX_SIGNALS_PER_SCAN = int(os.getenv("MAX_SIGNALS_PER_SCAN", "5"))
 
-    # false = сканировать не только приоритетный список
     USE_PRIORITY_SYMBOLS_ONLY = os.getenv("USE_PRIORITY_SYMBOLS_ONLY", "false").lower() == "true"
-
-    # сколько пар максимум брать в скан за цикл
-    # для старта советую 80-120, потом можно поднимать
     MAX_SYMBOLS_TO_SCAN = int(os.getenv("MAX_SYMBOLS_TO_SCAN", "100"))
 
     PRIORITY_SYMBOLS = [
@@ -67,7 +61,6 @@ class Config:
     # =========================================================
     # MARKET / LIQUIDITY
     # =========================================================
-    # Ослабляем пороги, чтобы в выборку попало больше реально торгуемых фьючерсов
     MIN_24H_QUOTE_VOLUME = float(os.getenv("MIN_24H_QUOTE_VOLUME", "30000000"))
     MIN_24H_TRADES = int(os.getenv("MIN_24H_TRADES", "30000"))
 
@@ -98,25 +91,25 @@ class Config:
     # =========================================================
     # ENTRY / RSI FILTERS
     # =========================================================
-    LONG_MAX_RSI_ENTRY = float(os.getenv("LONG_MAX_RSI_ENTRY", "68"))
-    SHORT_MIN_RSI_ENTRY = float(os.getenv("SHORT_MIN_RSI_ENTRY", "32"))
+    LONG_MAX_RSI_ENTRY = float(os.getenv("LONG_MAX_RSI_ENTRY", "70"))
+    SHORT_MIN_RSI_ENTRY = float(os.getenv("SHORT_MIN_RSI_ENTRY", "30"))
 
-    MAX_CHASE_DISTANCE_FROM_EMA20 = float(os.getenv("MAX_CHASE_DISTANCE_FROM_EMA20", "0.018"))
-    MAX_CHASE_DISTANCE_FROM_EMA50 = float(os.getenv("MAX_CHASE_DISTANCE_FROM_EMA50", "0.030"))
+    MAX_CHASE_DISTANCE_FROM_EMA20 = float(os.getenv("MAX_CHASE_DISTANCE_FROM_EMA20", "0.022"))
+    MAX_CHASE_DISTANCE_FROM_EMA50 = float(os.getenv("MAX_CHASE_DISTANCE_FROM_EMA50", "0.035"))
 
-    MIN_STOP_BUFFER_ATR = float(os.getenv("MIN_STOP_BUFFER_ATR", "0.30"))
+    MIN_STOP_BUFFER_ATR = float(os.getenv("MIN_STOP_BUFFER_ATR", "0.28"))
 
-    HARD_MIN_RESISTANCE_GAP = float(os.getenv("HARD_MIN_RESISTANCE_GAP", "0.006"))
-    HARD_MIN_SUPPORT_GAP = float(os.getenv("HARD_MIN_SUPPORT_GAP", "0.006"))
+    HARD_MIN_RESISTANCE_GAP = float(os.getenv("HARD_MIN_RESISTANCE_GAP", "0.0045"))
+    HARD_MIN_SUPPORT_GAP = float(os.getenv("HARD_MIN_SUPPORT_GAP", "0.0045"))
 
     # =========================================================
     # SIGNAL CLASSIFICATION
     # =========================================================
-    STRONG_MIN_SCORE = float(os.getenv("STRONG_MIN_SCORE", "6.8"))
-    STRONG_MIN_RR = float(os.getenv("STRONG_MIN_RR", "1.2"))
+    STRONG_MIN_SCORE = float(os.getenv("STRONG_MIN_SCORE", "6.2"))
+    STRONG_MIN_RR = float(os.getenv("STRONG_MIN_RR", "1.1"))
 
-    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.8"))
-    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.0"))
+    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.2"))
+    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "0.95"))
 
     MIN_SCORE = STRONG_MIN_SCORE
     MIN_RR = STRONG_MIN_RR
@@ -125,22 +118,9 @@ class Config:
     # STRATEGY MODE TUNING
     # =========================================================
     if STRATEGY_MODE == "SNIPER":
-        MIN_ADX_4H = float(os.getenv("MIN_ADX_4H", "20.0"))
-        MIN_ADX_1H = float(os.getenv("MIN_ADX_1H", "17.0"))
-        MIN_ATR_RATIO_15M = float(os.getenv("MIN_ATR_RATIO_15M", "0.0045"))
-
-        MAX_DISTANCE_FROM_EMA20 = float(os.getenv("MAX_DISTANCE_FROM_EMA20", "0.018"))
-        MAX_DISTANCE_FROM_EMA50 = float(os.getenv("MAX_DISTANCE_FROM_EMA50", "0.028"))
-
-        MIN_RESISTANCE_GAP = float(os.getenv("MIN_RESISTANCE_GAP", "0.008"))
-        MIN_SUPPORT_GAP = float(os.getenv("MIN_SUPPORT_GAP", "0.008"))
-
-        MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO = float(os.getenv("MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO", "0.85"))
-    else:
-        # BALANCED_PRO / default
         MIN_ADX_4H = float(os.getenv("MIN_ADX_4H", "18.0"))
-        MIN_ADX_1H = float(os.getenv("MIN_ADX_1H", "16.0"))
-        MIN_ATR_RATIO_15M = float(os.getenv("MIN_ATR_RATIO_15M", "0.0040"))
+        MIN_ADX_1H = float(os.getenv("MIN_ADX_1H", "15.0"))
+        MIN_ATR_RATIO_15M = float(os.getenv("MIN_ATR_RATIO_15M", "0.0038"))
 
         MAX_DISTANCE_FROM_EMA20 = float(os.getenv("MAX_DISTANCE_FROM_EMA20", "0.020"))
         MAX_DISTANCE_FROM_EMA50 = float(os.getenv("MAX_DISTANCE_FROM_EMA50", "0.030"))
@@ -148,11 +128,24 @@ class Config:
         MIN_RESISTANCE_GAP = float(os.getenv("MIN_RESISTANCE_GAP", "0.006"))
         MIN_SUPPORT_GAP = float(os.getenv("MIN_SUPPORT_GAP", "0.006"))
 
-        MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO = float(os.getenv("MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO", "0.80"))
+        MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO = float(os.getenv("MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO", "0.78"))
+    else:
+        # BALANCED_PRO / default
+        MIN_ADX_4H = float(os.getenv("MIN_ADX_4H", "14.0"))
+        MIN_ADX_1H = float(os.getenv("MIN_ADX_1H", "13.0"))
+        MIN_ATR_RATIO_15M = float(os.getenv("MIN_ATR_RATIO_15M", "0.0035"))
+
+        MAX_DISTANCE_FROM_EMA20 = float(os.getenv("MAX_DISTANCE_FROM_EMA20", "0.022"))
+        MAX_DISTANCE_FROM_EMA50 = float(os.getenv("MAX_DISTANCE_FROM_EMA50", "0.034"))
+
+        MIN_RESISTANCE_GAP = float(os.getenv("MIN_RESISTANCE_GAP", "0.0045"))
+        MIN_SUPPORT_GAP = float(os.getenv("MIN_SUPPORT_GAP", "0.0045"))
+
+        MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO = float(os.getenv("MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO", "0.70"))
 
     # =========================================================
     # HARD FILTERS FOR ENTRY QUALITY
     # =========================================================
-    MIN_CONFIRMATION_VOLUME_RATIO = float(os.getenv("MIN_CONFIRMATION_VOLUME_RATIO", "0.80"))
-    MAX_ENTRY_BODY_ATR = float(os.getenv("MAX_ENTRY_BODY_ATR", "1.20"))
-    MAX_BAD_WICK_RATIO = float(os.getenv("MAX_BAD_WICK_RATIO", "0.45"))
+    MIN_CONFIRMATION_VOLUME_RATIO = float(os.getenv("MIN_CONFIRMATION_VOLUME_RATIO", "0.65"))
+    MAX_ENTRY_BODY_ATR = float(os.getenv("MAX_ENTRY_BODY_ATR", "1.35"))
+    MAX_BAD_WICK_RATIO = float(os.getenv("MAX_BAD_WICK_RATIO", "0.52"))
