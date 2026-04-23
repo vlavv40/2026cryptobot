@@ -35,10 +35,16 @@ class Config:
     # SCANNER
     # =========================================================
     SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
-    MAX_SIGNALS_PER_SCAN = int(os.getenv("MAX_SIGNALS_PER_SCAN", "2"))
 
-    USE_PRIORITY_SYMBOLS_ONLY = os.getenv("USE_PRIORITY_SYMBOLS_ONLY", "true").lower() == "true"
-    MAX_SYMBOLS_TO_SCAN = int(os.getenv("MAX_SYMBOLS_TO_SCAN", "15"))
+    # было 2, ставим выше чтобы видеть больше рынка
+    MAX_SIGNALS_PER_SCAN = int(os.getenv("MAX_SIGNALS_PER_SCAN", "5"))
+
+    # false = сканировать не только приоритетный список
+    USE_PRIORITY_SYMBOLS_ONLY = os.getenv("USE_PRIORITY_SYMBOLS_ONLY", "false").lower() == "true"
+
+    # сколько пар максимум брать в скан за цикл
+    # для старта советую 80-120, потом можно поднимать
+    MAX_SYMBOLS_TO_SCAN = int(os.getenv("MAX_SYMBOLS_TO_SCAN", "100"))
 
     PRIORITY_SYMBOLS = [
         "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
@@ -61,8 +67,9 @@ class Config:
     # =========================================================
     # MARKET / LIQUIDITY
     # =========================================================
-    MIN_24H_QUOTE_VOLUME = float(os.getenv("MIN_24H_QUOTE_VOLUME", "100000000"))
-    MIN_24H_TRADES = int(os.getenv("MIN_24H_TRADES", "100000"))
+    # Ослабляем пороги, чтобы в выборку попало больше реально торгуемых фьючерсов
+    MIN_24H_QUOTE_VOLUME = float(os.getenv("MIN_24H_QUOTE_VOLUME", "30000000"))
+    MIN_24H_TRADES = int(os.getenv("MIN_24H_TRADES", "30000"))
 
     SIGNAL_COOLDOWN_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "180"))
     SETUP_PRICE_TOLERANCE = float(os.getenv("SETUP_PRICE_TOLERANCE", "0.0035"))

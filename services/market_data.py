@@ -49,12 +49,10 @@ class BinanceFuturesClient:
         if Config.USE_PRIORITY_SYMBOLS_ONLY:
             return valid_priority[: Config.MAX_SYMBOLS_TO_SCAN]
 
-        ticker_map = {}
+        filtered = []
         for item in tickers:
             symbol = item.get("symbol", "")
             if symbol not in exchange_symbols:
-                continue
-            if symbol not in Config.PRIORITY_SYMBOLS:
                 continue
 
             try:
@@ -68,15 +66,14 @@ class BinanceFuturesClient:
             if trades_count < Config.MIN_24H_TRADES:
                 continue
 
-            ticker_map[symbol] = {
-                "quote_volume": quote_volume,
-                "trades_count": trades_count,
-            }
+            filtered.append((symbol, quote_volume, trades_count))
 
-        result = [
-            s for s in Config.PRIORITY_SYMBOLS
-            if s in ticker_map
-        ]
+        filtered.sort(key=lambda x: (x[1], x[2]), reverse=True)
+
+        result = [symbol for symbol, _, _ in filtered]
+
+        if not result:
+            return valid_priority[: Config.MAX_SYMBOLS_TO_SCAN]
 
         return result[: Config.MAX_SYMBOLS_TO_SCAN]
 
