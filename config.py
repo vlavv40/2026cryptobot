@@ -130,7 +130,6 @@ class Config:
 
         MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO = float(os.getenv("MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO", "0.78"))
     else:
-        # BALANCED_PRO / default
         MIN_ADX_4H = float(os.getenv("MIN_ADX_4H", "14.0"))
         MIN_ADX_1H = float(os.getenv("MIN_ADX_1H", "13.0"))
         MIN_ATR_RATIO_15M = float(os.getenv("MIN_ATR_RATIO_15M", "0.0035"))
@@ -149,3 +148,11 @@ class Config:
     MIN_CONFIRMATION_VOLUME_RATIO = float(os.getenv("MIN_CONFIRMATION_VOLUME_RATIO", "0.65"))
     MAX_ENTRY_BODY_ATR = float(os.getenv("MAX_ENTRY_BODY_ATR", "1.35"))
     MAX_BAD_WICK_RATIO = float(os.getenv("MAX_BAD_WICK_RATIO", "0.52"))
+
+    # =========================================================
+    # PAPER TRADING / POSITION SIZE
+    # =========================================================
+    PAPER_START_BALANCE = float(os.getenv("PAPER_START_BALANCE", "1000"))
+    PAPER_TRADE_MARGIN_USD = float(os.getenv("PAPER_TRADE_MARGIN_USD", "100"))
+    PAPER_LEVERAGE = float(os.getenv("PAPER_LEVERAGE", "5"))
+    PAPER_MAX_OPEN_TRADES = int(os.getenv("PAPER_MAX_OPEN_TRADES", "5"))

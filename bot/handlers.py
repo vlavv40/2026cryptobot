@@ -180,11 +180,21 @@ async def _reset_paper(message: Message):
     async with db.pool.acquire() as conn:
         await conn.execute("DELETE FROM paper_trades;")
         await conn.execute(
-            "UPDATE paper_state SET start_balance=10000, balance=10000, risk_per_trade=0.01 WHERE id=1;"
+            """
+            UPDATE paper_state
+            SET start_balance=$1,
+                balance=$1,
+                risk_per_trade=0
+            WHERE id=1;
+            """,
+            float(Config.PAPER_START_BALANCE),
         )
 
     await message.answer(
-        "🧹 Paper trading сброшен.\nНовый тест начат с 10 000$.",
+        "🧹 Paper trading сброшен.\n"
+        f"Новый тест начат с {Config.PAPER_START_BALANCE}$.\n"
+        f"Каждая сделка: {Config.PAPER_TRADE_MARGIN_USD}$ x{Config.PAPER_LEVERAGE} "
+        f"= {Config.PAPER_TRADE_MARGIN_USD * Config.PAPER_LEVERAGE}$ позиция.",
         reply_markup=main_menu_keyboard,
     )
 
