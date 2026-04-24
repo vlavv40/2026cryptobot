@@ -156,3 +156,10 @@ class Config:
     PAPER_TRADE_MARGIN_USD = float(os.getenv("PAPER_TRADE_MARGIN_USD", "100"))
     PAPER_LEVERAGE = float(os.getenv("PAPER_LEVERAGE", "5"))
     PAPER_MAX_OPEN_TRADES = int(os.getenv("PAPER_MAX_OPEN_TRADES", "5"))
+
+    # =========================================================
+    # STOP LOSS LOGIC
+    # =========================================================
+    STOP_BUFFER_ATR = float(os.getenv("STOP_BUFFER_ATR", "0.35"))
+    MIN_STOP_ATR = float(os.getenv("MIN_STOP_ATR", "0.8"))
+    MAX_STOP_ATR = float(os.getenv("MAX_STOP_ATR", "2.2"))
