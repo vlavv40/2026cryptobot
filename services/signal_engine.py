@@ -557,6 +557,24 @@ class SignalEngine:
                 if support_val >= entry_min:
                     return None
 
+        entry_ref = entry_max if direction == "LONG" else entry_min
+        if entry_ref <= 0:
+            return None
+
+        risk_pct = abs(entry_ref - stop_loss) / entry_ref
+        tp1_distance_pct = abs(tp1 - entry_ref) / entry_ref
+
+        # Защита от мусорных уровней на дешёвых монетах типа SLP/PEPE/SHIB:
+        # после округления такие сделки выглядели как entry=stop=tp.
+        if risk_pct < 0.0025:
+            return None
+
+        if tp1_distance_pct < 0.0025:
+            return None
+
+        if len({round(entry_ref, 12), round(stop_loss, 12), round(tp1, 12)}) < 3:
+            return None
+
         return {
             "entry_min": entry_min,
             "entry_max": entry_max,
@@ -607,25 +625,12 @@ class SignalEngine:
 
         setup = self._check_structure_setup(htf_df, mtf_df, ltf_df)
         if setup.setup_type == "NONE":
-            ltf_last_for_fallback = self._closed(ltf_df)
-            ema20 = float(ltf_last_for_fallback["ema20"])
-            ema50 = float(ltf_last_for_fallback["ema50"])
-            close_price = float(ltf_last_for_fallback["close"])
-
-            # Fallback: если строгий структурный сетап не найден,
-            # не отбрасываем монету сразу. Даём ей шанс пройти через
-            # regime / confirmation / entry quality / score.
-            #
-            # Направление выбираем по рабочей EMA-зоне:
-            # - цена выше EMA20/EMA50 или EMA20 > EMA50 → LONG
-            # - иначе SHORT
-            if close_price >= ema20 or ema20 >= ema50:
-                setup.direction = "LONG"
-            else:
-                setup.direction = "SHORT"
-
-            setup.reason = "слабый структурный сетап fallback: направление по EMA-зоне"
-            setup.setup_type = "WEAK"
+            return SignalCheckResult(
+                symbol=symbol,
+                signal=None,
+                skip_reason=setup.reason,
+                diagnostics=diagnostics,
+            )
 
         regime_ok, regime_reason, regime_diag = self._check_regime_filters(
             setup.direction,
@@ -701,12 +706,12 @@ class SignalEngine:
         signal = Signal(
             symbol=symbol,
             direction=setup.direction,
-            entry_min=round(levels["entry_min"], 4),
-            entry_max=round(levels["entry_max"], 4),
-            stop_loss=round(levels["stop_loss"], 4),
-            tp1=round(levels["tp1"], 4),
-            tp2=round(levels["tp2"], 4),
-            tp3=round(levels["tp3"], 4),
+            entry_min=round(levels["entry_min"], 8),
+            entry_max=round(levels["entry_max"], 8),
+            stop_loss=round(levels["stop_loss"], 8),
+            tp1=round(levels["tp1"], 8),
+            tp2=round(levels["tp2"], 8),
+            tp3=round(levels["tp3"], 8),
             score=score,
             reasons=reasons,
             diagnostics=diagnostics,
