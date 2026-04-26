@@ -607,12 +607,25 @@ class SignalEngine:
 
         setup = self._check_structure_setup(htf_df, mtf_df, ltf_df)
         if setup.setup_type == "NONE":
-            return SignalCheckResult(
-                symbol=symbol,
-                signal=None,
-                skip_reason=setup.reason,
-                diagnostics=diagnostics,
-            )
+            ltf_last_for_fallback = self._closed(ltf_df)
+            ema20 = float(ltf_last_for_fallback["ema20"])
+            ema50 = float(ltf_last_for_fallback["ema50"])
+            close_price = float(ltf_last_for_fallback["close"])
+
+            # Fallback: если строгий структурный сетап не найден,
+            # не отбрасываем монету сразу. Даём ей шанс пройти через
+            # regime / confirmation / entry quality / score.
+            #
+            # Направление выбираем по рабочей EMA-зоне:
+            # - цена выше EMA20/EMA50 или EMA20 > EMA50 → LONG
+            # - иначе SHORT
+            if close_price >= ema20 or ema20 >= ema50:
+                setup.direction = "LONG"
+            else:
+                setup.direction = "SHORT"
+
+            setup.reason = "слабый структурный сетап fallback: направление по EMA-зоне"
+            setup.setup_type = "WEAK"
 
         regime_ok, regime_reason, regime_diag = self._check_regime_filters(
             setup.direction,
