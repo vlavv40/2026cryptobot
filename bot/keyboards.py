@@ -1,29 +1,36 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 
-main_menu_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [
-            KeyboardButton(text="📊 Статус"),
-            KeyboardButton(text="💓 Пульс"),
+def get_main_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📊 Статус"),
+                KeyboardButton(text="💼 Сделки"),
+            ],
+            [
+                KeyboardButton(text="📈 Статистика"),
+                KeyboardButton(text="📌 Сигналы"),
+            ],
+            [
+                KeyboardButton(text="🧹 Сброс"),
+            ],
         ],
-        [
-            KeyboardButton(text="🧪 Статистика paper"),
-            KeyboardButton(text="📂 Открытые сделки"),
+        resize_keyboard=True,
+        input_field_placeholder="Выбери действие 👇",
+    )
+
+
+def get_trades_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📂 Открытые"),
+                KeyboardButton(text="📜 История"),
+            ],
+            [
+                KeyboardButton(text="⬅️ Назад"),
+            ],
         ],
-        [
-            KeyboardButton(text="📜 История сделок"),
-            KeyboardButton(text="📈 Статистика сигналов"),
-        ],
-        [
-            KeyboardButton(text="🔄 Анализ рынка"),
-            KeyboardButton(text="🧹 Сбросить paper"),
-        ],
-        [
-            KeyboardButton(text="⚙️ Настройки"),
-            KeyboardButton(text="📌 Последние сигналы"),
-        ],
-    ],
-    resize_keyboard=True,
-    input_field_placeholder="Выбери действие 👇",
-)
+        resize_keyboard=True,
+    )
