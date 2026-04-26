@@ -12,9 +12,6 @@ def get_main_menu():
                 KeyboardButton(text="📈 Статистика"),
                 KeyboardButton(text="📌 Сигналы"),
             ],
-            [
-                KeyboardButton(text="🧹 Сброс"),
-            ],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выбери действие 👇",
@@ -33,4 +30,5 @@ def get_trades_menu():
             ],
         ],
         resize_keyboard=True,
+        input_field_placeholder="Раздел сделок 👇",
     )
