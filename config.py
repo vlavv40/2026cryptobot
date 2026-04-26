@@ -105,11 +105,11 @@ class Config:
     # =========================================================
     # SIGNAL CLASSIFICATION
     # =========================================================
-    STRONG_MIN_SCORE = float(os.getenv("STRONG_MIN_SCORE", "6.2"))
-    STRONG_MIN_RR = float(os.getenv("STRONG_MIN_RR", "1.1"))
+    STRONG_MIN_SCORE = float(os.getenv("STRONG_MIN_SCORE", "6.6"))
+    STRONG_MIN_RR = float(os.getenv("STRONG_MIN_RR", "1.15"))
 
-    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.2"))
-    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "0.95"))
+    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.9"))
+    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.05"))
 
     MIN_SCORE = STRONG_MIN_SCORE
     MIN_RR = STRONG_MIN_RR
@@ -130,9 +130,10 @@ class Config:
 
         MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO = float(os.getenv("MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO", "0.78"))
     else:
-        MIN_ADX_4H = float(os.getenv("MIN_ADX_4H", "14.0"))
-        MIN_ADX_1H = float(os.getenv("MIN_ADX_1H", "13.0"))
-        MIN_ATR_RATIO_15M = float(os.getenv("MIN_ATR_RATIO_15M", "0.0035"))
+        # BALANCED_PRO / default
+        MIN_ADX_4H = float(os.getenv("MIN_ADX_4H", "15.0"))
+        MIN_ADX_1H = float(os.getenv("MIN_ADX_1H", "15.0"))
+        MIN_ATR_RATIO_15M = float(os.getenv("MIN_ATR_RATIO_15M", "0.0038"))
 
         MAX_DISTANCE_FROM_EMA20 = float(os.getenv("MAX_DISTANCE_FROM_EMA20", "0.022"))
         MAX_DISTANCE_FROM_EMA50 = float(os.getenv("MAX_DISTANCE_FROM_EMA50", "0.034"))
@@ -145,21 +146,6 @@ class Config:
     # =========================================================
     # HARD FILTERS FOR ENTRY QUALITY
     # =========================================================
-    MIN_CONFIRMATION_VOLUME_RATIO = float(os.getenv("MIN_CONFIRMATION_VOLUME_RATIO", "0.65"))
-    MAX_ENTRY_BODY_ATR = float(os.getenv("MAX_ENTRY_BODY_ATR", "1.35"))
-    MAX_BAD_WICK_RATIO = float(os.getenv("MAX_BAD_WICK_RATIO", "0.52"))
-
-    # =========================================================
-    # PAPER TRADING / POSITION SIZE
-    # =========================================================
-    PAPER_START_BALANCE = float(os.getenv("PAPER_START_BALANCE", "1000"))
-    PAPER_TRADE_MARGIN_USD = float(os.getenv("PAPER_TRADE_MARGIN_USD", "100"))
-    PAPER_LEVERAGE = float(os.getenv("PAPER_LEVERAGE", "5"))
-    PAPER_MAX_OPEN_TRADES = int(os.getenv("PAPER_MAX_OPEN_TRADES", "5"))
-
-    # =========================================================
-    # STOP LOSS LOGIC
-    # =========================================================
-    STOP_BUFFER_ATR = float(os.getenv("STOP_BUFFER_ATR", "0.35"))
-    MIN_STOP_ATR = float(os.getenv("MIN_STOP_ATR", "0.8"))
-    MAX_STOP_ATR = float(os.getenv("MAX_STOP_ATR", "2.2"))
+    MIN_CONFIRMATION_VOLUME_RATIO = float(os.getenv("MIN_CONFIRMATION_VOLUME_RATIO", "0.70"))
+    MAX_ENTRY_BODY_ATR = float(os.getenv("MAX_ENTRY_BODY_ATR", "1.20"))
+    MAX_BAD_WICK_RATIO = float(os.getenv("MAX_BAD_WICK_RATIO", "0.45"))

@@ -46,6 +46,10 @@ class SignalEngine:
         self.structure_engine = StructureEngine()
         self.regime_analyzer = MarketRegimeAnalyzer()
 
+    # =========================================================
+    # PREPARE DATA
+    # =========================================================
+
     def prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
@@ -61,10 +65,12 @@ class SignalEngine:
         df["atr_ratio"] = atr_ratio(df, Config.ATR_PERIOD)
         df["support"], df["resistance"] = add_support_resistance(df, 30, 2)
 
+        # Денежный объем
         if "quote_asset_volume" in df.columns:
             df["quote_volume_avg_20"] = df["quote_asset_volume"].rolling(window=20).mean()
             df["quote_volume_ratio"] = df["quote_asset_volume"] / df["quote_volume_avg_20"]
         else:
+            # запасной вариант
             df["quote_asset_volume"] = df["close"] * df["volume"]
             df["quote_volume_avg_20"] = df["quote_asset_volume"].rolling(window=20).mean()
             df["quote_volume_ratio"] = df["quote_asset_volume"] / df["quote_volume_avg_20"]
@@ -76,6 +82,10 @@ class SignalEngine:
 
     def _prev_closed(self, df: pd.DataFrame) -> pd.Series:
         return df.iloc[-3]
+
+    # =========================================================
+    # DIAGNOSTICS
+    # =========================================================
 
     def _build_diagnostics(self, htf_df: pd.DataFrame, mtf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> dict:
         htf_last = self._closed(htf_df)
@@ -121,6 +131,10 @@ class SignalEngine:
             "is_bear": close < open_,
         }
 
+    # =========================================================
+    # REGIME FILTERS
+    # =========================================================
+
     def _check_regime_filters(
         self,
         setup_direction: str,
@@ -141,8 +155,12 @@ class SignalEngine:
             "ltf_regime_dir": ltf_regime.direction,
         }
 
+        # 4H range — жёсткий запрет
         if htf_regime.is_ranging:
             return False, "market regime: 4h боковик", regime_diag
+
+        # 1H range допустим только если 4H трендовый.
+        # Поэтому тут НЕ режем просто по mtf_regime.is_ranging.
 
         if htf_regime.is_overextended:
             return False, "market regime: 4h рынок перерастянут", regime_diag
@@ -161,6 +179,8 @@ class SignalEngine:
         if htf_regime.direction not in {wanted_dir, "NONE"}:
             return False, "market regime: 4h направление против сигнала", regime_diag
 
+        # 1H делаем мягче:
+        # если 1H уже строго в другую сторону — skip
         if mtf_regime.direction not in {wanted_dir, "NONE"}:
             return False, "market regime: 1h направление против сигнала", regime_diag
 
@@ -168,6 +188,10 @@ class SignalEngine:
             return False, "market regime: 4h не подтверждает тренд", regime_diag
 
         return True, "", regime_diag
+
+    # =========================================================
+    # ENTRY QUALITY
+    # =========================================================
 
     def _check_entry_quality(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
         last = self._closed(ltf_df)
@@ -186,6 +210,7 @@ class SignalEngine:
         dist_ema20 = abs(last_close - ema20) / last_close if last_close else 0.0
         dist_ema50 = abs(last_close - ema50) / last_close if last_close else 0.0
 
+        # chase-фильтр: только если и от EMA20, и от EMA50 далеко
         if (
             dist_ema20 > Config.MAX_CHASE_DISTANCE_FROM_EMA20
             and dist_ema50 > Config.MAX_CHASE_DISTANCE_FROM_EMA50
@@ -206,6 +231,7 @@ class SignalEngine:
             ):
                 return False, "entry quality: сильный верхний фитиль, продавец давит LONG"
 
+            # мягкое подтверждение покупателя
             if not (
                 last_candle["is_bull"]
                 or (
@@ -227,6 +253,7 @@ class SignalEngine:
             ):
                 return False, "entry quality: сильный нижний фитиль, покупатель давит SHORT"
 
+            # мягкое подтверждение продавца
             if not (
                 last_candle["is_bear"]
                 or (
@@ -243,6 +270,10 @@ class SignalEngine:
 
         return True, ""
 
+    # =========================================================
+    # SETUP CHECK
+    # =========================================================
+
     def _check_structure_setup(
         self,
         htf_df: pd.DataFrame,
@@ -250,6 +281,10 @@ class SignalEngine:
         ltf_df: pd.DataFrame,
     ):
         return self.structure_engine.detect_setup(htf_df, mtf_df, ltf_df)
+
+    # =========================================================
+    # CONFIRMATION
+    # =========================================================
 
     def _check_confirmation(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str]:
         last = self._closed(ltf_df)
@@ -261,9 +296,23 @@ class SignalEngine:
         if last["quote_volume_ratio"] < Config.MIN_CONFIRMATION_VOLUME_RATIO:
             return False, "15m денежный объём слишком слабый"
 
+        last_close = float(last["close"])
+        prev_close = float(prev["close"])
+        ema20 = float(last["ema20"])
+        ema50 = float(last["ema50"])
+
         if direction == "LONG":
             if last["rsi"] > Config.LONG_MAX_RSI_ENTRY:
                 return False, "LONG перегрет по RSI"
+
+            # Вход должен подтверждаться закрытием свечи в сторону LONG.
+            # Это режет слабые сигналы, где цена стоит на месте или откатывает.
+            if last_close <= prev_close:
+                return False, "LONG нет роста закрытия свечи"
+
+            # Цена не должна быть ниже всей рабочей EMA-зоны.
+            if last_close < ema20 and last_close < ema50:
+                return False, "LONG цена ниже рабочей EMA-зоны"
 
             macd_ok = (
                 last["macd_hist"] > 0
@@ -278,6 +327,14 @@ class SignalEngine:
         if last["rsi"] < Config.SHORT_MIN_RSI_ENTRY:
             return False, "SHORT перегрет по RSI"
 
+        # Вход должен подтверждаться закрытием свечи в сторону SHORT.
+        if last_close >= prev_close:
+            return False, "SHORT нет снижения закрытия свечи"
+
+        # Цена не должна быть выше всей рабочей EMA-зоны.
+        if last_close > ema20 and last_close > ema50:
+            return False, "SHORT цена выше рабочей EMA-зоны"
+
         macd_ok = (
             last["macd_hist"] < 0
             or last["macd"] < last["macd_signal"]
@@ -287,6 +344,10 @@ class SignalEngine:
             return False, "MACD не подтверждает SHORT"
 
         return True, ""
+
+    # =========================================================
+    # SCORE
+    # =========================================================
 
     def calculate_score(
         self,
@@ -418,9 +479,12 @@ class SignalEngine:
 
         return round(score, 1), reasons
 
+    # =========================================================
+    # LEVELS
+    # =========================================================
+
     def build_trade_levels(self, direction: str, ltf_df: pd.DataFrame):
         last = self._closed(ltf_df)
-
         atr = float(last["atr"])
         close = float(last["close"])
         support = last["support"]
@@ -428,95 +492,69 @@ class SignalEngine:
         ema20 = float(last["ema20"])
         ema50 = float(last["ema50"])
 
-        if pd.isna(atr) or atr <= 0 or close <= 0:
+        if pd.isna(atr) or atr <= 0:
             return None
 
-        stop_buffer = atr * Config.STOP_BUFFER_ATR
-        min_stop_distance = atr * Config.MIN_STOP_ATR
-        max_stop_distance = atr * Config.MAX_STOP_ATR
+        stop_buffer = atr * Config.MIN_STOP_BUFFER_ATR
 
         if direction == "LONG":
             anchor = min(close, ema20, ema50)
             entry_min = anchor * 0.999
             entry_max = close * 1.001
-            entry_price = (entry_min + entry_max) / 2.0
 
-            stop_candidates = [
-                close - atr * 1.2,
-                ema50 - stop_buffer,
-            ]
-
+            stop_candidates = [close - atr * 1.2]
             if pd.notna(support):
-                stop_candidates.append(float(support) - stop_buffer)
+                stop_candidates.append(float(support) - atr * 0.15)
 
-            raw_stop = min(stop_candidates)
-
-            if entry_price - raw_stop < min_stop_distance:
-                stop_loss = entry_price - min_stop_distance
-            else:
-                stop_loss = raw_stop
-
-            if entry_price - stop_loss > max_stop_distance:
-                return None
+            stop_loss = min(stop_candidates)
+            stop_loss = min(stop_loss, entry_min - stop_buffer)
 
             if stop_loss >= entry_min:
                 return None
 
-            risk = entry_price - stop_loss
+            risk = entry_max - stop_loss
             if risk <= 0:
                 return None
 
-            tp1 = entry_price + risk * 1.6
-            tp2 = entry_price + risk * 2.3
-            tp3 = entry_price + risk * 3.0
+            tp1 = entry_max + risk * 1.2
+            tp2 = entry_max + risk * 1.8
+            tp3 = entry_max + risk * 2.5
 
-            rr = (tp1 - entry_price) / risk
+            rr = (tp1 - entry_max) / risk
 
             if pd.notna(resistance):
                 resistance_val = float(resistance)
-                if resistance_val <= entry_price:
+                if resistance_val <= entry_max:
                     return None
 
         else:
             anchor = max(close, ema20, ema50)
             entry_min = close * 0.999
             entry_max = anchor * 1.001
-            entry_price = (entry_min + entry_max) / 2.0
 
-            stop_candidates = [
-                close + atr * 1.2,
-                ema50 + stop_buffer,
-            ]
-
+            stop_candidates = [close + atr * 1.2]
             if pd.notna(resistance):
-                stop_candidates.append(float(resistance) + stop_buffer)
+                stop_candidates.append(float(resistance) + atr * 0.15)
 
-            raw_stop = max(stop_candidates)
-
-            if raw_stop - entry_price < min_stop_distance:
-                stop_loss = entry_price + min_stop_distance
-            else:
-                stop_loss = raw_stop
-
-            if stop_loss - entry_price > max_stop_distance:
-                return None
+            stop_loss = max(stop_candidates)
+            stop_loss = max(stop_loss, entry_max + stop_buffer)
 
             if stop_loss <= entry_max:
                 return None
 
-            risk = stop_loss - entry_price
+            risk = stop_loss - entry_min
             if risk <= 0:
                 return None
 
-            tp1 = entry_price - risk * 1.6
-            tp2 = entry_price - risk * 2.3
-            tp3 = entry_price - risk * 3.0
+            tp1 = entry_min - risk * 1.2
+            tp2 = entry_min - risk * 1.8
+            tp3 = entry_min - risk * 2.5
 
-            rr = (entry_price - tp1) / risk
+            rr = (entry_min - tp1) / risk
 
             if pd.notna(support):
                 support_val = float(support)
-                if support_val >= entry_price:
+                if support_val >= entry_min:
                     return None
 
         return {
@@ -529,6 +567,10 @@ class SignalEngine:
             "rr": rr,
         }
 
+    # =========================================================
+    # CLASSIFY
+    # =========================================================
+
     def classify_signal(self, score: float, rr: float) -> Optional[str]:
         if score >= Config.STRONG_MIN_SCORE and rr >= Config.STRONG_MIN_RR:
             return "STRONG"
@@ -537,6 +579,10 @@ class SignalEngine:
             return "SETUP"
 
         return None
+
+    # =========================================================
+    # MAIN ANALYZE
+    # =========================================================
 
     def analyze_symbol(
         self,

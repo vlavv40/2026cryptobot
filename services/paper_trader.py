@@ -1,9 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
-from config import Config
 from services.db import db
-from services.risk_manager import RiskManager
 
 
 @dataclass
@@ -28,9 +26,6 @@ class VirtualTrade:
 
 
 class PaperTrader:
-    def __init__(self):
-        self.risk_manager = RiskManager()
-
     async def get_state(self) -> dict:
         assert db.pool is not None
         async with db.pool.acquire() as conn:
@@ -53,36 +48,18 @@ class PaperTrader:
             if exists:
                 return None
 
-            open_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'"
-            )
-
-            max_open = int(getattr(Config, "PAPER_MAX_OPEN_TRADES", 5))
-            if int(open_count) >= max_open:
-                return None
-
             state = await conn.fetchrow("SELECT * FROM paper_state WHERE id=1")
             balance = float(state["balance"])
-
-            margin_usd = float(getattr(Config, "PAPER_TRADE_MARGIN_USD", 100))
-            leverage = float(getattr(Config, "PAPER_LEVERAGE", 5))
-
-            if balance < margin_usd:
-                return None
+            risk_per_trade = float(state["risk_per_trade"])
 
             entry_price = (signal.entry_min + signal.entry_max) / 2.0
+            risk_amount = balance * risk_per_trade
+            risk_per_unit = abs(entry_price - signal.stop_loss)
 
-            position = self.risk_manager.calculate_fixed_position(
-                entry=entry_price,
-                stop_loss=signal.stop_loss,
-                balance=balance,
-            )
-
-            if position is None:
+            if risk_per_unit <= 0:
                 return None
 
-            size = position.size
-            risk_amount = position.risk_usd
+            size = risk_amount / risk_per_unit
 
             row = await conn.fetchrow(
                 """
@@ -141,49 +118,37 @@ class PaperTrader:
             for row in rows:
                 trade = dict(row)
                 close_reason = None
-                exit_price = None
-
-                entry_price = float(trade["entry_price"])
-                size = float(trade["size"])
+                result_r = 0.0
 
                 if trade["direction"] == "LONG":
                     if low <= trade["stop_loss"]:
                         close_reason = "STOP_HIT"
-                        exit_price = float(trade["stop_loss"])
+                        result_r = -1.0
                     elif high >= trade["tp3"]:
                         close_reason = "TP3_HIT"
-                        exit_price = float(trade["tp3"])
+                        result_r = 3.0
                     elif high >= trade["tp2"]:
                         close_reason = "TP2_HIT"
-                        exit_price = float(trade["tp2"])
+                        result_r = 2.3
                     elif high >= trade["tp1"]:
                         close_reason = "TP1_HIT"
-                        exit_price = float(trade["tp1"])
+                        result_r = 1.6
                 else:
                     if high >= trade["stop_loss"]:
                         close_reason = "STOP_HIT"
-                        exit_price = float(trade["stop_loss"])
+                        result_r = -1.0
                     elif low <= trade["tp3"]:
                         close_reason = "TP3_HIT"
-                        exit_price = float(trade["tp3"])
+                        result_r = 3.0
                     elif low <= trade["tp2"]:
                         close_reason = "TP2_HIT"
-                        exit_price = float(trade["tp2"])
+                        result_r = 2.3
                     elif low <= trade["tp1"]:
                         close_reason = "TP1_HIT"
-                        exit_price = float(trade["tp1"])
+                        result_r = 1.6
 
-                if close_reason and exit_price is not None:
-                    if trade["direction"] == "LONG":
-                        result_usdt = (exit_price - entry_price) * size
-                    else:
-                        result_usdt = (entry_price - exit_price) * size
-
-                    result_usdt = round(result_usdt, 2)
-
-                    risk_amount = max(float(trade["risk_amount"]), 0.01)
-                    result_r = round(result_usdt / risk_amount, 2)
-
+                if close_reason:
+                    result_usdt = round(float(trade["risk_amount"]) * result_r, 2)
                     balance = round(balance + result_usdt, 2)
 
                     await conn.execute(
@@ -247,10 +212,6 @@ class PaperTrader:
         pnl = round(balance - start_balance, 2)
         winrate = round((wins / closed) * 100, 2) if closed > 0 else 0.0
 
-        margin_usd = float(getattr(Config, "PAPER_TRADE_MARGIN_USD", 100))
-        leverage = float(getattr(Config, "PAPER_LEVERAGE", 5))
-        notional_usd = margin_usd * leverage
-
         return {
             "start_balance": round(start_balance, 2),
             "balance": round(balance, 2),
@@ -262,9 +223,6 @@ class PaperTrader:
             "wins": int(wins),
             "losses": int(losses),
             "winrate": winrate,
-            "trade_margin_usd": round(margin_usd, 2),
-            "leverage": round(leverage, 2),
-            "notional_usd": round(notional_usd, 2),
         }
 
     async def get_open_trades(self) -> list[dict]:
