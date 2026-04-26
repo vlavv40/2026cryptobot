@@ -2,38 +2,82 @@ from aiogram import Bot
 
 
 def _fmt_price(value: float) -> str:
-    if value >= 1000:
+    try:
+        value = float(value)
+    except Exception:
+        return "-"
+
+    if value == 0:
+        return "0"
+
+    if abs(value) >= 1000:
         return f"{value:,.2f}".replace(",", " ")
-    if value >= 1:
+    if abs(value) >= 100:
+        return f"{value:.2f}"
+    if abs(value) >= 1:
         return f"{value:.4f}".rstrip("0").rstrip(".")
-    return f"{value:.6f}".rstrip("0").rstrip(".")
+    if abs(value) >= 0.01:
+        return f"{value:.6f}".rstrip("0").rstrip(".")
+
+    return f"{value:.8f}".rstrip("0").rstrip(".")
+
+
+def _fmt_r(value) -> str:
+    try:
+        value = float(value)
+    except Exception:
+        return "-"
+
+    if value > 0:
+        return f"+{value:.2f}R"
+    return f"{value:.2f}R"
+
+
+def _direction_emoji(direction: str) -> str:
+    return "🟢" if direction == "LONG" else "🔴"
+
+
+def _signal_header(signal_type: str, direction: str) -> str:
+    side = "LONG" if direction == "LONG" else "SHORT"
+
+    if signal_type == "STRONG":
+        return f"🔥 <b>STRONG {side}</b>"
+
+    return f"⚡️ <b>SETUP {side}</b>"
 
 
 def format_signal(signal) -> str:
+    signal_type = getattr(signal, "signal_type", "STRONG")
+    direction = signal.direction
+    emoji = _direction_emoji(direction)
+
     reasons = signal.reasons[:6]
-    reasons_text = "\n".join(f"• {reason}" for reason in reasons)
+    reasons_text = "\n".join(f"• {reason}" for reason in reasons) if reasons else "• условия подтверждены"
 
-    header = "🔴 STRONG SIGNAL"
-    if getattr(signal, "signal_type", "STRONG") == "SETUP":
-        header = "🟡 SETUP SIGNAL"
-
-    risk_hint = "Размер позиции: стандартный"
-    if getattr(signal, "signal_type", "STRONG") == "SETUP":
-        risk_hint = "Размер позиции: уменьшенный / смотреть руками"
+    position_hint = "Стандартный вход"
+    if signal_type == "SETUP":
+        position_hint = "Осторожный вход / сниженный риск"
 
     return (
-        f"{header}\n\n"
-        f"#{signal.symbol}\n"
-        f"Направление: {signal.direction}\n"
-        f"Вход: {_fmt_price(signal.entry_min)} - {_fmt_price(signal.entry_max)}\n"
-        f"Stop: {_fmt_price(signal.stop_loss)}\n"
-        f"TP1: {_fmt_price(signal.tp1)}\n"
-        f"TP2: {_fmt_price(signal.tp2)}\n"
-        f"TP3: {_fmt_price(signal.tp3)}\n"
-        f"Score: {signal.score}/10\n"
-        f"Тип: {getattr(signal, 'signal_type', 'STRONG')}\n"
-        f"{risk_hint}\n\n"
-        f"Причины:\n{reasons_text}"
+        f"{_signal_header(signal_type, direction)}\n"
+        f"━━━━━━━━━━━━━━\n\n"
+        f"{emoji} <b>#{signal.symbol}</b>\n"
+        f"Направление: <b>{direction}</b>\n"
+        f"Тип: <b>{signal_type}</b>\n"
+        f"Score: <b>{signal.score}/10</b>\n\n"
+        f"🎯 <b>Зона входа</b>\n"
+        f"<code>{_fmt_price(signal.entry_min)} - {_fmt_price(signal.entry_max)}</code>\n\n"
+        f"🛑 <b>Stop</b>\n"
+        f"<code>{_fmt_price(signal.stop_loss)}</code>\n\n"
+        f"🏁 <b>Цели</b>\n"
+        f"TP1: <code>{_fmt_price(signal.tp1)}</code>\n"
+        f"TP2: <code>{_fmt_price(signal.tp2)}</code>\n"
+        f"TP3: <code>{_fmt_price(signal.tp3)}</code>\n\n"
+        f"📌 <b>Риск</b>\n"
+        f"{position_hint}\n\n"
+        f"🧠 <b>Причины</b>\n"
+        f"{reasons_text}\n\n"
+        f"━━━━━━━━━━━━━━"
     )
 
 
@@ -41,38 +85,58 @@ def format_result_message(item: dict) -> str:
     status = item["status"]
     symbol = item["symbol"]
     direction = item["direction"]
+    signal_type = item.get("signal_type", "UNKNOWN")
     realized_r = item.get("realized_r")
 
-    icon = "✅"
-    title = "Сделка закрыта в плюс"
     if status == "STOP_HIT":
         icon = "❌"
-        title = "Сделка закрыта по стопу"
+        title = "STOP HIT"
+        subtitle = "Сделка закрыта по стопу"
     elif status == "TP1_HIT":
-        title = "Достигнут TP1"
+        icon = "✅"
+        title = "TP1 HIT"
+        subtitle = "Первая цель достигнута"
     elif status == "TP2_HIT":
-        title = "Достигнут TP2"
+        icon = "💰"
+        title = "TP2 HIT"
+        subtitle = "Вторая цель достигнута"
     elif status == "TP3_HIT":
-        title = "Достигнут TP3"
+        icon = "🚀"
+        title = "TP3 HIT"
+        subtitle = "Максимальная цель достигнута"
+    else:
+        icon = "📌"
+        title = status
+        subtitle = "Сделка обновлена"
 
     return (
-        f"{icon} {title}\n\n"
-        f"#{symbol}\n"
-        f"Направление: {direction}\n"
-        f"Статус: {status}\n"
-        f"R результат: {realized_r}\n"
-        f"Вход: {_fmt_price(float(item['entry_min']))} - {_fmt_price(float(item['entry_max']))}\n"
-        f"Stop: {_fmt_price(float(item['stop_loss']))}\n"
-        f"TP1: {_fmt_price(float(item['tp1']))}\n"
-        f"TP2: {_fmt_price(float(item['tp2']))}\n"
-        f"TP3: {_fmt_price(float(item['tp3']))}"
+        f"{icon} <b>{title}</b>\n"
+        f"━━━━━━━━━━━━━━\n\n"
+        f"<b>{subtitle}</b>\n\n"
+        f"{_direction_emoji(direction)} <b>#{symbol}</b>\n"
+        f"Направление: <b>{direction}</b>\n"
+        f"Тип: <b>{signal_type}</b>\n"
+        f"Результат: <b>{_fmt_r(realized_r)}</b>\n\n"
+        f"🎯 <b>Вход</b>\n"
+        f"<code>{_fmt_price(float(item['entry_min']))} - {_fmt_price(float(item['entry_max']))}</code>\n\n"
+        f"🛑 <b>Stop</b>\n"
+        f"<code>{_fmt_price(float(item['stop_loss']))}</code>\n\n"
+        f"🏁 <b>Цели</b>\n"
+        f"TP1: <code>{_fmt_price(float(item['tp1']))}</code>\n"
+        f"TP2: <code>{_fmt_price(float(item['tp2']))}</code>\n"
+        f"TP3: <code>{_fmt_price(float(item['tp3']))}</code>\n\n"
+        f"━━━━━━━━━━━━━━"
     )
 
 
 async def send_text_to_all(bot: Bot, chat_ids: list[str], text: str):
     for chat_id in chat_ids:
         try:
-            await bot.send_message(chat_id=chat_id, text=text)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="HTML",
+            )
         except Exception:
             continue
 
