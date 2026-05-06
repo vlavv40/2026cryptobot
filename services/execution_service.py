@@ -24,23 +24,34 @@ class ExecutionService:
         )
 
     def _headers(self) -> dict:
-        return {"X-MBX-APIKEY": Config.BINANCE_API_KEY}
+        return {
+            "X-MBX-APIKEY": Config.BINANCE_API_KEY
+        }
 
     def _sign(self, params: dict) -> str:
         query = urlencode(params)
+
         signature = hmac.new(
             Config.BINANCE_API_SECRET.encode(),
             query.encode(),
             hashlib.sha256,
         ).hexdigest()
+
         return f"{query}&signature={signature}"
 
-    async def _request(self, method: str, path: str, params: dict | None = None):
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict | None = None,
+    ):
         params = params or {}
+
         params["timestamp"] = int(time.time() * 1000)
         params["recvWindow"] = 5000
 
         signed_query = self._sign(params)
+
         url = f"{self.base_url}{path}?{signed_query}"
 
         async with aiohttp.ClientSession() as session:
@@ -50,45 +61,73 @@ class ExecutionService:
                 headers=self._headers(),
                 timeout=20,
             ) as response:
+
                 data = await response.json()
 
                 if response.status >= 400:
-                    raise RuntimeError(f"Binance error {response.status}: {data}")
+                    raise RuntimeError(
+                        f"Binance error {response.status}: {data}"
+                    )
 
                 return data
 
-    async def _public_get(self, path: str, params: dict | None = None):
+    async def _public_get(
+        self,
+        path: str,
+        params: dict | None = None,
+    ):
         url = f"{self.base_url}{path}"
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params or {}, timeout=20) as response:
+            async with session.get(
+                url,
+                params=params or {},
+                timeout=20,
+            ) as response:
+
                 data = await response.json()
 
                 if response.status >= 400:
-                    raise RuntimeError(f"Binance public error {response.status}: {data}")
+                    raise RuntimeError(
+                        f"Binance public error {response.status}: {data}"
+                    )
 
                 return data
 
     async def get_price(self, symbol: str) -> float:
-        data = await self._public_get("/fapi/v1/ticker/price", {"symbol": symbol})
+        data = await self._public_get(
+            "/fapi/v1/ticker/price",
+            {"symbol": symbol},
+        )
+
         return float(data["price"])
 
     async def get_symbol_rules(self, symbol: str) -> dict:
         data = await self._public_get("/fapi/v1/exchangeInfo")
 
         for item in data.get("symbols", []):
+
             if item.get("symbol") == symbol:
+
                 step_size = 0.001
                 min_qty = 0.0
                 tick_size = 0.0001
 
                 for f in item.get("filters", []):
+
                     if f.get("filterType") == "LOT_SIZE":
-                        step_size = float(f.get("stepSize", step_size))
-                        min_qty = float(f.get("minQty", min_qty))
+                        step_size = float(
+                            f.get("stepSize", step_size)
+                        )
+
+                        min_qty = float(
+                            f.get("minQty", min_qty)
+                        )
 
                     if f.get("filterType") == "PRICE_FILTER":
-                        tick_size = float(f.get("tickSize", tick_size))
+                        tick_size = float(
+                            f.get("tickSize", tick_size)
+                        )
 
                 return {
                     "step_size": step_size,
@@ -102,40 +141,65 @@ class ExecutionService:
             "tick_size": 0.0001,
         }
 
-    def round_to_step(self, value: float, step: float) -> float:
+    def round_to_step(
+        self,
+        value: float,
+        step: float,
+    ) -> float:
+
         if step <= 0:
             return value
 
         precision = 0
+
         text = f"{step:.16f}".rstrip("0")
 
         if "." in text:
             precision = len(text.split(".")[1])
 
         rounded = value - (value % step)
+
         return round(rounded, precision)
 
-    def round_qty(self, qty: float, step_size: float) -> float:
+    def round_qty(
+        self,
+        qty: float,
+        step_size: float,
+    ) -> float:
+
         return self.round_to_step(qty, step_size)
 
-    def round_price(self, price: float, tick_size: float) -> float:
+    def round_price(
+        self,
+        price: float,
+        tick_size: float,
+    ) -> float:
+
         return self.round_to_step(price, tick_size)
 
     async def position_exists(self, symbol: str) -> bool:
         data = await self._request(
             "GET",
             "/fapi/v2/positionRisk",
-            {"symbol": symbol},
+            {
+                "symbol": symbol
+            },
         )
 
         if isinstance(data, list):
+
             for item in data:
-                if item.get("symbol") == symbol and abs(float(item.get("positionAmt", 0))) > 0:
+
+                if (
+                    item.get("symbol") == symbol
+                    and abs(float(item.get("positionAmt", 0))) > 0
+                ):
                     return True
 
         return False
 
     async def set_margin_and_leverage(self, symbol: str):
+
         try:
             await self._request(
                 "POST",
@@ -145,11 +209,15 @@ class ExecutionService:
                     "marginType": Config.AUTO_TRADE_MARGIN_TYPE,
                 },
             )
+
         except Exception as error:
+
             text = str(error)
 
             if "No need to change margin type" not in text:
-                logger.warning(f"[AUTO TRADE] margin type warning {symbol}: {error}")
+                logger.warning(
+                    f"[AUTO TRADE] margin type warning {symbol}: {error}"
+                )
 
         await self._request(
             "POST",
@@ -160,7 +228,13 @@ class ExecutionService:
             },
         )
 
-    async def place_market_order(self, symbol: str, direction: str, qty: float):
+    async def place_market_order(
+        self,
+        symbol: str,
+        direction: str,
+        qty: float,
+    ):
+
         side = "BUY" if direction == "LONG" else "SELL"
 
         return await self._request(
@@ -174,7 +248,13 @@ class ExecutionService:
             },
         )
 
-    async def place_stop_market(self, symbol: str, direction: str, stop_price: float):
+    async def place_stop_market(
+        self,
+        symbol: str,
+        direction: str,
+        stop_price: float,
+    ):
+
         side = "SELL" if direction == "LONG" else "BUY"
 
         return await self._request(
@@ -198,6 +278,7 @@ class ExecutionService:
         trigger_price: float,
         qty: float,
     ):
+
         side = "SELL" if direction == "LONG" else "BUY"
 
         return await self._request(
@@ -215,7 +296,13 @@ class ExecutionService:
             },
         )
 
-    async def execute_signal(self, bot, chat_ids: list[str], signal):
+    async def execute_signal(
+        self,
+        bot,
+        chat_ids: list[str],
+        signal,
+    ):
+
         if not self._enabled():
             return None
 
@@ -223,48 +310,111 @@ class ExecutionService:
         direction = signal.direction
 
         try:
+
             if Config.AUTO_TRADE_ONE_POSITION_PER_SYMBOL:
+
                 exists = await self.position_exists(symbol)
 
                 if exists:
-                    logger.info(f"[AUTO TRADE] {symbol} уже есть позиция, пропускаю")
+                    logger.info(
+                        f"[AUTO TRADE] {symbol} уже есть позиция"
+                    )
+
                     return None
 
             await self.set_margin_and_leverage(symbol)
 
             price = await self.get_price(symbol)
+
             rules = await self.get_symbol_rules(symbol)
 
-            position_usdt = Config.AUTO_TRADE_USDT * Config.AUTO_TRADE_LEVERAGE
+            position_usdt = (
+                Config.AUTO_TRADE_USDT
+                * Config.AUTO_TRADE_LEVERAGE
+            )
+
             raw_qty = position_usdt / price
-            qty = self.round_qty(raw_qty, rules["step_size"])
+
+            qty = self.round_qty(
+                raw_qty,
+                rules["step_size"],
+            )
 
             if qty <= 0 or qty < rules["min_qty"]:
                 raise RuntimeError(
-                    f"Некорректный qty={qty}, min_qty={rules['min_qty']}"
+                    f"Некорректный qty={qty}"
                 )
 
-            stop_price = self.round_price(float(signal.stop_loss), rules["tick_size"])
-            tp1 = self.round_price(float(signal.tp1), rules["tick_size"])
-            tp2 = self.round_price(float(signal.tp2), rules["tick_size"])
-            tp3 = self.round_price(float(signal.tp3), rules["tick_size"])
+            stop_price = self.round_price(
+                float(signal.stop_loss),
+                rules["tick_size"],
+            )
 
-            entry_order = await self.place_market_order(symbol, direction, qty)
+            tp1 = self.round_price(
+                float(signal.tp1),
+                rules["tick_size"],
+            )
 
-            tp_qty_1 = self.round_qty(qty * 0.34, rules["step_size"])
-            tp_qty_2 = self.round_qty(qty * 0.33, rules["step_size"])
-            tp_qty_3 = self.round_qty(qty - tp_qty_1 - tp_qty_2, rules["step_size"])
+            tp2 = self.round_price(
+                float(signal.tp2),
+                rules["tick_size"],
+            )
 
-            await self.place_stop_market(symbol, direction, stop_price)
+            tp3 = self.round_price(
+                float(signal.tp3),
+                rules["tick_size"],
+            )
+
+            entry_order = await self.place_market_order(
+                symbol,
+                direction,
+                qty,
+            )
+
+            tp_qty_1 = self.round_qty(
+                qty * 0.34,
+                rules["step_size"],
+            )
+
+            tp_qty_2 = self.round_qty(
+                qty * 0.33,
+                rules["step_size"],
+            )
+
+            tp_qty_3 = self.round_qty(
+                qty - tp_qty_1 - tp_qty_2,
+                rules["step_size"],
+            )
+
+            await self.place_stop_market(
+                symbol,
+                direction,
+                stop_price,
+            )
 
             if tp_qty_1 > 0:
-                await self.place_take_profit(symbol, direction, tp1, tp_qty_1)
+                await self.place_take_profit(
+                    symbol,
+                    direction,
+                    tp1,
+                    tp_qty_1,
+                )
 
             if tp_qty_2 > 0:
-                await self.place_take_profit(symbol, direction, tp2, tp_qty_2)
+                await self.place_take_profit(
+                    symbol,
+                    direction,
+                    tp2,
+                    tp_qty_2,
+                )
 
             if tp_qty_3 > 0:
-                await self.place_take_profit(symbol, direction, tp3, tp_qty_3)
+                await self.place_take_profit(
+                    symbol,
+                    direction,
+                    tp3,
+                    tp_qty_3,
+                )
 
             text = (
                 "🚀 <b>AUTO TRADE OPENED</b>\n"
@@ -282,13 +432,23 @@ class ExecutionService:
                 "━━━━━━━━━━━━━━"
             )
 
-            await send_text_to_all(bot, chat_ids, text)
-            logger.info(f"[AUTO TRADE OPENED] {symbol} {direction} qty={qty}")
+            await send_text_to_all(
+                bot,
+                chat_ids,
+                text,
+            )
+
+            logger.info(
+                f"[AUTO TRADE OPENED] {symbol} {direction}"
+            )
 
             return entry_order
 
         except Exception as error:
-            logger.exception(f"[AUTO TRADE ERROR] {symbol} {direction}: {error}")
+
+            logger.exception(
+                f"[AUTO TRADE ERROR] {symbol}: {error}"
+            )
 
             await send_text_to_all(
                 bot,
