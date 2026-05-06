@@ -16,6 +16,7 @@ from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
 from services.telegram_sender import format_result_message, send_signal, send_text_to_all
 from services.trade_tracker import TradeTracker
+from services.execution_service import ExecutionService
 from utils.logger import setup_logger
 
 logger = setup_logger()
@@ -31,6 +32,7 @@ class MarketScanner:
         self.trade_tracker = TradeTracker()
         self.paper = PaperTrader()
         self.btc_filter = BTCFilter()
+        self.execution = ExecutionService()
         self._scan_lock = asyncio.Lock()
 
         self.last_cycle_info = {
@@ -451,6 +453,13 @@ class MarketScanner:
                 try:
                     if send_to_telegram:
                         await send_signal(bot, Config.CHAT_IDS, signal)
+
+                    if Config.AUTO_TRADE:
+                        await self.execution.execute_signal(
+                            bot,
+                            Config.CHAT_IDS,
+                            signal,
+                        )
 
                     await self._set_cooldown(signal.symbol, signal.direction)
                     await self._remember_signal(signal)

@@ -149,3 +149,15 @@ class Config:
     MIN_CONFIRMATION_VOLUME_RATIO = float(os.getenv("MIN_CONFIRMATION_VOLUME_RATIO", "0.70"))
     MAX_ENTRY_BODY_ATR = float(os.getenv("MAX_ENTRY_BODY_ATR", "1.20"))
     MAX_BAD_WICK_RATIO = float(os.getenv("MAX_BAD_WICK_RATIO", "0.45"))
+
+        # =========================================================
+    # AUTO TRADE / BINANCE EXECUTION
+    # =========================================================
+    BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
+    BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
+
+    AUTO_TRADE = os.getenv("AUTO_TRADE", "false").lower() == "true"
+    AUTO_TRADE_USDT = float(os.getenv("AUTO_TRADE_USDT", "10"))
+    AUTO_TRADE_LEVERAGE = int(os.getenv("AUTO_TRADE_LEVERAGE", "3"))
+    AUTO_TRADE_MARGIN_TYPE = os.getenv("AUTO_TRADE_MARGIN_TYPE", "ISOLATED").upper()
+    AUTO_TRADE_ONE_POSITION_PER_SYMBOL = os.getenv("AUTO_TRADE_ONE_POSITION_PER_SYMBOL", "true").lower() == "true"
