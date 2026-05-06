@@ -1,6 +1,7 @@
 from aiogram import Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiogram.types import FSInputFile
 
 from bot.keyboards import get_main_menu, get_trades_menu
 
@@ -341,3 +342,12 @@ async def btn_back(message: Message):
         "Выбери действие:",
         reply_markup=get_main_menu(),
     )
+
+
+@router.message(Command("export"))
+async def export_handler(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
+
+    path = await scanner.trade_tracker.export_csv()
+
+    await message.answer_document(FSInputFile(path))

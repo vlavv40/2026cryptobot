@@ -1,3 +1,7 @@
+# services/trade_tracker.py
+
+import csv
+from pathlib import Path
 from datetime import datetime
 
 from services.db import db
@@ -159,3 +163,44 @@ class TradeTracker:
 
     async def get_csv_path(self) -> str:
         return "tracked_signals.csv"
+
+    async def export_csv(self) -> str:
+        signals = await self.get_all_signals()
+
+        path = Path("/tmp/trades_export.csv")
+
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+
+            writer.writerow([
+                "symbol",
+                "direction",
+                "entry_min",
+                "entry_max",
+                "stop_loss",
+                "tp1",
+                "tp2",
+                "tp3",
+                "status",
+                "realized_r",
+                "created_at",
+                "closed_at",
+            ])
+
+            for s in signals:
+                writer.writerow([
+                    s["symbol"],
+                    s["direction"],
+                    s["entry_min"],
+                    s["entry_max"],
+                    s["stop_loss"],
+                    s["tp1"],
+                    s["tp2"],
+                    s["tp3"],
+                    s["status"],
+                    s.get("realized_r"),
+                    s["created_at"],
+                    s["closed_at"],
+                ])
+
+        return str(path)
