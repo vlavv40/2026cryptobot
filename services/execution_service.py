@@ -17,7 +17,11 @@ class ExecutionService:
         self.base_url = Config.BINANCE_FUTURES_BASE_URL
 
     def _enabled(self) -> bool:
-        return bool(Config.AUTO_TRADE and Config.BINANCE_API_KEY and Config.BINANCE_API_SECRET)
+        return bool(
+            Config.AUTO_TRADE
+            and Config.BINANCE_API_KEY
+            and Config.BINANCE_API_SECRET
+        )
 
     def _headers(self) -> dict:
         return {"X-MBX-APIKEY": Config.BINANCE_API_KEY}
@@ -40,7 +44,12 @@ class ExecutionService:
         url = f"{self.base_url}{path}?{signed_query}"
 
         async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, headers=self._headers(), timeout=20) as response:
+            async with session.request(
+                method,
+                url,
+                headers=self._headers(),
+                timeout=20,
+            ) as response:
                 data = await response.json()
 
                 if response.status >= 400:
@@ -71,34 +80,53 @@ class ExecutionService:
             if item.get("symbol") == symbol:
                 step_size = 0.001
                 min_qty = 0.0
+                tick_size = 0.0001
 
                 for f in item.get("filters", []):
                     if f.get("filterType") == "LOT_SIZE":
                         step_size = float(f.get("stepSize", step_size))
                         min_qty = float(f.get("minQty", min_qty))
 
+                    if f.get("filterType") == "PRICE_FILTER":
+                        tick_size = float(f.get("tickSize", tick_size))
+
                 return {
                     "step_size": step_size,
                     "min_qty": min_qty,
+                    "tick_size": tick_size,
                 }
 
-        return {"step_size": 0.001, "min_qty": 0.0}
+        return {
+            "step_size": 0.001,
+            "min_qty": 0.0,
+            "tick_size": 0.0001,
+        }
 
-    def round_qty(self, qty: float, step_size: float) -> float:
-        if step_size <= 0:
-            return qty
+    def round_to_step(self, value: float, step: float) -> float:
+        if step <= 0:
+            return value
 
         precision = 0
-        text = f"{step_size:.16f}".rstrip("0")
+        text = f"{step:.16f}".rstrip("0")
 
         if "." in text:
             precision = len(text.split(".")[1])
 
-        rounded = qty - (qty % step_size)
+        rounded = value - (value % step)
         return round(rounded, precision)
 
+    def round_qty(self, qty: float, step_size: float) -> float:
+        return self.round_to_step(qty, step_size)
+
+    def round_price(self, price: float, tick_size: float) -> float:
+        return self.round_to_step(price, tick_size)
+
     async def position_exists(self, symbol: str) -> bool:
-        data = await self._request("GET", "/fapi/v2/positionRisk", {"symbol": symbol})
+        data = await self._request(
+            "GET",
+            "/fapi/v2/positionRisk",
+            {"symbol": symbol},
+        )
 
         if isinstance(data, list):
             for item in data:
@@ -119,6 +147,7 @@ class ExecutionService:
             )
         except Exception as error:
             text = str(error)
+
             if "No need to change margin type" not in text:
                 logger.warning(f"[AUTO TRADE] margin type warning {symbol}: {error}")
 
@@ -150,28 +179,36 @@ class ExecutionService:
 
         return await self._request(
             "POST",
-            "/fapi/v1/order",
+            "/fapi/v1/algoOrder",
             {
                 "symbol": symbol,
                 "side": side,
+                "algoType": "CONDITIONAL",
                 "type": "STOP_MARKET",
-                "stopPrice": stop_price,
+                "triggerPrice": stop_price,
                 "closePosition": "true",
                 "workingType": "MARK_PRICE",
             },
         )
 
-    async def place_take_profit(self, symbol: str, direction: str, stop_price: float, qty: float):
+    async def place_take_profit(
+        self,
+        symbol: str,
+        direction: str,
+        trigger_price: float,
+        qty: float,
+    ):
         side = "SELL" if direction == "LONG" else "BUY"
 
         return await self._request(
             "POST",
-            "/fapi/v1/order",
+            "/fapi/v1/algoOrder",
             {
                 "symbol": symbol,
                 "side": side,
+                "algoType": "CONDITIONAL",
                 "type": "TAKE_PROFIT_MARKET",
-                "stopPrice": stop_price,
+                "triggerPrice": trigger_price,
                 "quantity": qty,
                 "reduceOnly": "true",
                 "workingType": "MARK_PRICE",
@@ -188,6 +225,7 @@ class ExecutionService:
         try:
             if Config.AUTO_TRADE_ONE_POSITION_PER_SYMBOL:
                 exists = await self.position_exists(symbol)
+
                 if exists:
                     logger.info(f"[AUTO TRADE] {symbol} уже есть позиция, пропускаю")
                     return None
@@ -202,7 +240,14 @@ class ExecutionService:
             qty = self.round_qty(raw_qty, rules["step_size"])
 
             if qty <= 0 or qty < rules["min_qty"]:
-                raise RuntimeError(f"Некорректный qty={qty}, min_qty={rules['min_qty']}")
+                raise RuntimeError(
+                    f"Некорректный qty={qty}, min_qty={rules['min_qty']}"
+                )
+
+            stop_price = self.round_price(float(signal.stop_loss), rules["tick_size"])
+            tp1 = self.round_price(float(signal.tp1), rules["tick_size"])
+            tp2 = self.round_price(float(signal.tp2), rules["tick_size"])
+            tp3 = self.round_price(float(signal.tp3), rules["tick_size"])
 
             entry_order = await self.place_market_order(symbol, direction, qty)
 
@@ -210,14 +255,16 @@ class ExecutionService:
             tp_qty_2 = self.round_qty(qty * 0.33, rules["step_size"])
             tp_qty_3 = self.round_qty(qty - tp_qty_1 - tp_qty_2, rules["step_size"])
 
-            await self.place_stop_market(symbol, direction, signal.stop_loss)
+            await self.place_stop_market(symbol, direction, stop_price)
 
             if tp_qty_1 > 0:
-                await self.place_take_profit(symbol, direction, signal.tp1, tp_qty_1)
+                await self.place_take_profit(symbol, direction, tp1, tp_qty_1)
+
             if tp_qty_2 > 0:
-                await self.place_take_profit(symbol, direction, signal.tp2, tp_qty_2)
+                await self.place_take_profit(symbol, direction, tp2, tp_qty_2)
+
             if tp_qty_3 > 0:
-                await self.place_take_profit(symbol, direction, signal.tp3, tp_qty_3)
+                await self.place_take_profit(symbol, direction, tp3, tp_qty_3)
 
             text = (
                 "🚀 <b>AUTO TRADE OPENED</b>\n"
@@ -228,10 +275,10 @@ class ExecutionService:
                 f"Плечо: <b>x{Config.AUTO_TRADE_LEVERAGE}</b>\n"
                 f"Позиция: <b>{position_usdt}$</b>\n"
                 f"Qty: <b>{qty}</b>\n\n"
-                f"Stop: <code>{signal.stop_loss}</code>\n"
-                f"TP1: <code>{signal.tp1}</code>\n"
-                f"TP2: <code>{signal.tp2}</code>\n"
-                f"TP3: <code>{signal.tp3}</code>\n\n"
+                f"Stop: <code>{stop_price}</code>\n"
+                f"TP1: <code>{tp1}</code>\n"
+                f"TP2: <code>{tp2}</code>\n"
+                f"TP3: <code>{tp3}</code>\n\n"
                 "━━━━━━━━━━━━━━"
             )
 
