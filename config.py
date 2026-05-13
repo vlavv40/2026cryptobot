@@ -16,7 +16,7 @@ class Config:
     POSTGRES_URI = os.getenv("POSTGRES_URI", "")
 
     BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
-
+    PROXY_URL = os.getenv("PROXY_URL", "")
     # =========================================================
     # MODE
     # =========================================================

@@ -4,6 +4,7 @@ import hashlib
 from urllib.parse import urlencode
 
 import aiohttp
+from aiohttp_socks import ProxyConnector
 
 from config import Config
 from services.telegram_sender import send_text_to_all
@@ -15,6 +16,15 @@ logger = setup_logger()
 class ExecutionService:
     def __init__(self):
         self.base_url = Config.BINANCE_FUTURES_BASE_URL
+
+    def _make_session(self):
+        proxy_url = getattr(Config, "PROXY_URL", "")
+
+        if proxy_url:
+            connector = ProxyConnector.from_url(proxy_url)
+            return aiohttp.ClientSession(connector=connector)
+
+        return aiohttp.ClientSession()
 
     def _enabled(self) -> bool:
         return bool(
@@ -54,7 +64,7 @@ class ExecutionService:
 
         url = f"{self.base_url}{path}?{signed_query}"
 
-        async with aiohttp.ClientSession() as session:
+        async with self._make_session() as session:
             async with session.request(
                 method,
                 url,
@@ -78,7 +88,7 @@ class ExecutionService:
     ):
         url = f"{self.base_url}{path}"
 
-        async with aiohttp.ClientSession() as session:
+        async with self._make_session() as session:
             async with session.get(
                 url,
                 params=params or {},
@@ -177,7 +187,7 @@ class ExecutionService:
 
         return self.round_to_step(price, tick_size)
 
-    async def position_exists(self, symbol: str) -> bool:
+    async def get_position_qty(self, symbol: str) -> float:
         data = await self._request(
             "GET",
             "/fapi/v2/positionRisk",
@@ -187,16 +197,15 @@ class ExecutionService:
         )
 
         if isinstance(data, list):
-
             for item in data:
+                if item.get("symbol") == symbol:
+                    return abs(float(item.get("positionAmt", 0)))
 
-                if (
-                    item.get("symbol") == symbol
-                    and abs(float(item.get("positionAmt", 0))) > 0
-                ):
-                    return True
+        return 0.0
 
-        return False
+    async def position_exists(self, symbol: str) -> bool:
+        qty = await self.get_position_qty(symbol)
+        return qty > 0
 
     async def set_margin_and_leverage(self, symbol: str):
 
@@ -248,6 +257,68 @@ class ExecutionService:
             },
         )
 
+    async def close_position_market(
+        self,
+        symbol: str,
+        direction: str,
+    ):
+        qty = await self.get_position_qty(symbol)
+
+        if qty <= 0:
+            logger.warning(
+                f"[AUTO TRADE CLOSE] {symbol} нет открытой позиции для закрытия"
+            )
+            return None
+
+        rules = await self.get_symbol_rules(symbol)
+
+        qty = self.round_qty(
+            qty,
+            rules["step_size"],
+        )
+
+        if qty <= 0 or qty < rules["min_qty"]:
+            logger.warning(
+                f"[AUTO TRADE CLOSE] {symbol} некорректный qty для закрытия: {qty}"
+            )
+            return None
+
+        side = "SELL" if direction == "LONG" else "BUY"
+
+        try:
+            await self.cancel_all_algo_orders(symbol)
+        except Exception as error:
+            logger.warning(
+                f"[AUTO TRADE CLOSE] {symbol} не удалось отменить algo orders: {error}"
+            )
+
+        result = await self._request(
+            "POST",
+            "/fapi/v1/order",
+            {
+                "symbol": symbol,
+                "side": side,
+                "type": "MARKET",
+                "quantity": qty,
+                "reduceOnly": "true",
+            },
+        )
+
+        logger.info(
+            f"[AUTO TRADE CLOSE] {symbol} {direction} qty={qty}"
+        )
+
+        return result
+
+    async def cancel_all_algo_orders(self, symbol: str):
+        return await self._request(
+            "DELETE",
+            "/fapi/v1/algoOpenOrders",
+            {
+                "symbol": symbol,
+            },
+        )
+
     async def place_stop_market(
         self,
         symbol: str,
@@ -295,6 +366,127 @@ class ExecutionService:
                 "workingType": "MARK_PRICE",
             },
         )
+
+    async def replace_protection_orders(
+        self,
+        symbol: str,
+        direction: str,
+        stop_price: float,
+        take_profits: list[tuple[float, float]],
+    ):
+        rules = await self.get_symbol_rules(symbol)
+
+        stop_price = self.round_price(
+            float(stop_price),
+            rules["tick_size"],
+        )
+
+        await self.cancel_all_algo_orders(symbol)
+
+        await self.place_stop_market(
+            symbol,
+            direction,
+            stop_price,
+        )
+
+        for tp_price, qty in take_profits:
+            tp_price = self.round_price(
+                float(tp_price),
+                rules["tick_size"],
+            )
+
+            qty = self.round_qty(
+                float(qty),
+                rules["step_size"],
+            )
+
+            if qty > 0:
+                await self.place_take_profit(
+                    symbol,
+                    direction,
+                    tp_price,
+                    qty,
+                )
+
+        logger.info(
+            f"[SMART SL] {symbol} {direction} protection replaced | "
+            f"stop={stop_price} | tps={take_profits}"
+        )
+
+    async def move_stop_after_tp1(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        tp2: float,
+        tp3: float,
+    ):
+        rules = await self.get_symbol_rules(symbol)
+
+        qty = await self.get_position_qty(symbol)
+
+        if qty <= 0:
+            logger.warning(
+                f"[SMART SL] {symbol} нет позиции после TP1"
+            )
+            return None
+
+        tp2_qty = self.round_qty(
+            qty * 0.67,
+            rules["step_size"],
+        )
+
+        tp3_qty = self.round_qty(
+            qty - tp2_qty,
+            rules["step_size"],
+        )
+
+        await self.replace_protection_orders(
+            symbol=symbol,
+            direction=direction,
+            stop_price=entry_price,
+            take_profits=[
+                (tp2, tp2_qty),
+                (tp3, tp3_qty),
+            ],
+        )
+
+        return {
+            "qty": qty,
+            "new_stop": entry_price,
+            "tp2_qty": tp2_qty,
+            "tp3_qty": tp3_qty,
+        }
+
+    async def move_stop_after_tp2(
+        self,
+        symbol: str,
+        direction: str,
+        tp1: float,
+        tp3: float,
+    ):
+        qty = await self.get_position_qty(symbol)
+
+        if qty <= 0:
+            logger.warning(
+                f"[SMART SL] {symbol} нет позиции после TP2"
+            )
+            return None
+
+        await self.replace_protection_orders(
+            symbol=symbol,
+            direction=direction,
+            stop_price=tp1,
+            take_profits=[
+                (tp3, qty),
+            ],
+        )
+
+        return {
+            "qty": qty,
+            "new_stop": tp1,
+            "tp3_qty": qty,
+        }
 
     async def execute_signal(
         self,
@@ -372,12 +564,12 @@ class ExecutionService:
             )
 
             tp_qty_1 = self.round_qty(
-                qty * 0.34,
+                qty * 0.70,
                 rules["step_size"],
             )
 
             tp_qty_2 = self.round_qty(
-                qty * 0.33,
+                qty * 0.20,
                 rules["step_size"],
             )
 
@@ -426,9 +618,9 @@ class ExecutionService:
                 f"Позиция: <b>{position_usdt}$</b>\n"
                 f"Qty: <b>{qty}</b>\n\n"
                 f"Stop: <code>{stop_price}</code>\n"
-                f"TP1: <code>{tp1}</code>\n"
-                f"TP2: <code>{tp2}</code>\n"
-                f"TP3: <code>{tp3}</code>\n\n"
+                f"TP1: <code>{tp1}</code> — 70%\n"
+                f"TP2: <code>{tp2}</code> — 20%\n"
+                f"TP3: <code>{tp3}</code> — 10%\n\n"
                 "━━━━━━━━━━━━━━"
             )
 

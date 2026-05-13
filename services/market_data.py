@@ -1,5 +1,6 @@
 import aiohttp
 import pandas as pd
+from aiohttp_socks import ProxyConnector
 
 from config import Config
 
@@ -8,10 +9,19 @@ class BinanceFuturesClient:
     def __init__(self):
         self.base_url = Config.BINANCE_FUTURES_BASE_URL
 
+    def _make_session(self):
+        proxy_url = getattr(Config, "PROXY_URL", "")
+
+        if proxy_url:
+            connector = ProxyConnector.from_url(proxy_url)
+            return aiohttp.ClientSession(connector=connector)
+
+        return aiohttp.ClientSession()
+
     async def get_usdt_futures_symbols(self) -> list[str]:
         url = f"{self.base_url}/fapi/v1/exchangeInfo"
 
-        async with aiohttp.ClientSession() as session:
+        async with self._make_session() as session:
             async with session.get(url, timeout=20) as response:
                 data = await response.json()
 
@@ -29,12 +39,13 @@ class BinanceFuturesClient:
     async def get_24h_tickers(self) -> list[dict]:
         url = f"{self.base_url}/fapi/v1/ticker/24hr"
 
-        async with aiohttp.ClientSession() as session:
+        async with self._make_session() as session:
             async with session.get(url, timeout=20) as response:
                 data = await response.json()
 
         if isinstance(data, dict):
             return []
+
         return data
 
     async def get_liquid_symbols(self) -> list[str]:
@@ -52,6 +63,7 @@ class BinanceFuturesClient:
         filtered = []
         for item in tickers:
             symbol = item.get("symbol", "")
+
             if symbol not in exchange_symbols:
                 continue
 
@@ -63,6 +75,7 @@ class BinanceFuturesClient:
 
             if quote_volume < Config.MIN_24H_QUOTE_VOLUME:
                 continue
+
             if trades_count < Config.MIN_24H_TRADES:
                 continue
 
@@ -77,16 +90,26 @@ class BinanceFuturesClient:
 
         return result[: Config.MAX_SYMBOLS_TO_SCAN]
 
-    async def get_klines(self, symbol: str, interval: str, limit: int = 250) -> pd.DataFrame:
+    async def get_klines(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 250,
+    ) -> pd.DataFrame:
         url = f"{self.base_url}/fapi/v1/klines"
+
         params = {
             "symbol": symbol,
             "interval": interval,
             "limit": limit,
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=20) as response:
+        async with self._make_session() as session:
+            async with session.get(
+                url,
+                params=params,
+                timeout=20,
+            ) as response:
                 data = await response.json()
 
         df = pd.DataFrame(
