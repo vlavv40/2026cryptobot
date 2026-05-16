@@ -45,6 +45,18 @@ class Database:
             """)
 
             await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_logs (
+                id BIGSERIAL PRIMARY KEY,
+                level TEXT DEFAULT 'INFO',
+                symbol TEXT,
+                action TEXT NOT NULL,
+                message TEXT NOT NULL,
+                reason TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            await conn.execute("""
             CREATE TABLE IF NOT EXISTS tracked_signals (
                 id TEXT PRIMARY KEY,
                 symbol TEXT NOT NULL,
@@ -62,6 +74,19 @@ class Database:
                 closed_at TIMESTAMP,
                 notified BOOLEAN NOT NULL DEFAULT FALSE
             );
+            """)
+
+            await conn.execute("""
+            ALTER TABLE tracked_signals
+            ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'bot',
+            ADD COLUMN IF NOT EXISTS strategy TEXT,
+            ADD COLUMN IF NOT EXISTS current_price DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS reason TEXT,
+            ADD COLUMN IF NOT EXISTS indicators_json JSONB,
+            ADD COLUMN IF NOT EXISTS status_log_json JSONB DEFAULT '[]'::jsonb,
+            ADD COLUMN IF NOT EXISTS hidden BOOLEAN DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS invalid_reason TEXT;
             """)
 
             await conn.execute("""
