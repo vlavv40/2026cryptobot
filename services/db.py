@@ -61,6 +61,17 @@ class Database:
             """)
 
             await conn.execute("""
+            ALTER TABLE bot_logs
+            ALTER COLUMN id DROP DEFAULT;
+            """)
+
+            await conn.execute("""
+            ALTER TABLE bot_logs
+            ALTER COLUMN id TYPE BIGINT
+            USING NULLIF(id::text, '')::bigint;
+            """)
+
+            await conn.execute("""
             SELECT setval(
                 'bot_logs_id_seq',
                 GREATEST(COALESCE((SELECT MAX(id) FROM bot_logs), 0) + 1, 1),
