@@ -160,5 +160,28 @@ class Database:
             );
             """)
 
+    async def is_autotrade_enabled(self) -> bool:
+        if not Config.AUTO_TRADE:
+            return False
+
+        if self.pool is None:
+            return Config.AUTO_TRADE
+
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT
+                        COUNT(*)::int AS total,
+                        COALESCE(BOOL_OR(enabled), FALSE) AS enabled
+                    FROM autotrade_settings
+                """)
+
+            if not row or int(row["total"] or 0) == 0:
+                return Config.AUTO_TRADE
+
+            return bool(row["enabled"])
+        except Exception:
+            return Config.AUTO_TRADE
+
 
 db = Database()

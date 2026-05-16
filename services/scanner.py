@@ -12,6 +12,7 @@ from services.market_data import BinanceFuturesClient
 from services.news_guard import NewsGuard
 from services.paper_trader import PaperTrader
 from services import pulse_bridge
+from services.db import db
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
@@ -508,11 +509,20 @@ class MarketScanner:
                     if send_to_telegram:
                         await send_signal(bot, Config.CHAT_IDS, signal)
 
-                    if Config.AUTO_TRADE:
+                    if await db.is_autotrade_enabled():
                         await self.execution.execute_signal(
                             bot,
                             Config.CHAT_IDS,
                             signal,
+                        )
+                    elif Config.AUTO_TRADE:
+                        logger.info(f"[AUTO TRADE PAUSED] {signal.symbol} | выключено в Crypto Pulse")
+                        await pulse_bridge.log_bot(
+                            "INFO",
+                            signal.symbol,
+                            "AUTOTRADE_PAUSED",
+                            f"{signal.symbol}: автоторговля выключена в Crypto Pulse",
+                            "enabled=false",
                         )
 
                     await self._set_cooldown(signal.symbol, signal.direction)
