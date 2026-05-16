@@ -57,6 +57,27 @@ class Database:
             """)
 
             await conn.execute("""
+            CREATE SEQUENCE IF NOT EXISTS bot_logs_id_seq;
+            """)
+
+            await conn.execute("""
+            SELECT setval(
+                'bot_logs_id_seq',
+                GREATEST(COALESCE((SELECT MAX(id) FROM bot_logs), 0) + 1, 1),
+                false
+            );
+            """)
+
+            await conn.execute("""
+            ALTER TABLE bot_logs
+            ALTER COLUMN id SET DEFAULT nextval('bot_logs_id_seq');
+            """)
+
+            await conn.execute("""
+            ALTER SEQUENCE bot_logs_id_seq OWNED BY bot_logs.id;
+            """)
+
+            await conn.execute("""
             CREATE TABLE IF NOT EXISTS tracked_signals (
                 id TEXT PRIMARY KEY,
                 symbol TEXT NOT NULL,
