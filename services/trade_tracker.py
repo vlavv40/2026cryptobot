@@ -1,6 +1,7 @@
 # services/trade_tracker.py
 
 import csv
+import json
 from pathlib import Path
 from datetime import datetime
 
@@ -55,9 +56,14 @@ class TradeTracker:
                 INSERT INTO tracked_signals (
                     id, symbol, direction, entry_min, entry_max, stop_loss,
                     tp1, tp2, tp3, score, status, realized_r,
-                    created_at, closed_at, notified
+                    created_at, closed_at, notified,
+                    strategy, reason, indicators_json
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'OPEN',NULL,$11,NULL,FALSE)
+                VALUES (
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                    'OPEN',NULL,$11,NULL,FALSE,
+                    $12,$13,$14::jsonb
+                )
                 """,
                 payload["id"],
                 payload["symbol"],
@@ -70,6 +76,9 @@ class TradeTracker:
                 payload["tp3"],
                 payload["score"],
                 datetime.utcnow(),
+                payload.get("strategy"),
+                payload.get("reason"),
+                json.dumps(payload.get("indicators_json") or {}, ensure_ascii=False),
             )
 
     async def get_open_signals(self) -> list[dict]:
