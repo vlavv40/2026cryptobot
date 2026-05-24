@@ -87,6 +87,7 @@ def format_result_message(item: dict) -> str:
     direction = item["direction"]
     signal_type = item.get("signal_type", "UNKNOWN")
     realized_r = item.get("realized_r")
+    stop_loss = item.get("active_stop_loss") or item["stop_loss"]
 
     if status == "STOP_HIT":
         icon = "❌"
@@ -120,11 +121,57 @@ def format_result_message(item: dict) -> str:
         f"🎯 <b>Вход</b>\n"
         f"<code>{_fmt_price(float(item['entry_min']))} - {_fmt_price(float(item['entry_max']))}</code>\n\n"
         f"🛑 <b>Stop</b>\n"
-        f"<code>{_fmt_price(float(item['stop_loss']))}</code>\n\n"
+        f"<code>{_fmt_price(float(stop_loss))}</code>\n\n"
         f"🏁 <b>Цели</b>\n"
         f"TP1: <code>{_fmt_price(float(item['tp1']))}</code>\n"
         f"TP2: <code>{_fmt_price(float(item['tp2']))}</code>\n"
         f"TP3: <code>{_fmt_price(float(item['tp3']))}</code>\n\n"
+        f"━━━━━━━━━━━━━━"
+    )
+
+
+def format_trade_update_message(item: dict, status: str, auto_managed: bool = True) -> str:
+    symbol = item["symbol"]
+    direction = item["direction"]
+
+    if status == "TP1_HIT":
+        title = "TP1 HIT"
+        subtitle = "70% позиции закрыто, стоп остатка перенесен на TP1"
+        if not auto_managed:
+            subtitle = "Первая цель достигнута, сигнал остается в сопровождении"
+        stop_loss = item["tp1"]
+        remaining_targets = (
+            f"TP2: <code>{_fmt_price(float(item['tp2']))}</code>\n"
+            f"TP3: <code>{_fmt_price(float(item['tp3']))}</code>\n\n"
+        )
+    elif status == "TP2_HIT":
+        title = "TP2 HIT"
+        subtitle = "Еще 20% позиции закрыто, стоп остатка перенесен на TP2"
+        if not auto_managed:
+            subtitle = "Вторая цель достигнута, сигнал остается в сопровождении"
+        stop_loss = item["tp2"]
+        remaining_targets = (
+            f"TP3: <code>{_fmt_price(float(item['tp3']))}</code>\n\n"
+        )
+    else:
+        title = status
+        subtitle = "Сопровождение позиции обновлено"
+        stop_loss = item.get("active_stop_loss") or item["stop_loss"]
+        remaining_targets = (
+            f"TP2: <code>{_fmt_price(float(item['tp2']))}</code>\n"
+            f"TP3: <code>{_fmt_price(float(item['tp3']))}</code>\n\n"
+        )
+
+    return (
+        f"✅ <b>{title}</b>\n"
+        f"━━━━━━━━━━━━━━\n\n"
+        f"<b>{subtitle}</b>\n\n"
+        f"{_direction_emoji(direction)} <b>#{symbol}</b>\n"
+        f"Направление: <b>{direction}</b>\n\n"
+        f"🛑 <b>Новый Stop</b>\n"
+        f"<code>{_fmt_price(float(stop_loss))}</code>\n\n"
+        f"🏁 <b>Остались цели</b>\n"
+        f"{remaining_targets}"
         f"━━━━━━━━━━━━━━"
     )
 

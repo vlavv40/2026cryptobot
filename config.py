@@ -14,8 +14,6 @@ class Config:
     CHAT_IDS = [chat_id.strip() for chat_id in RAW_CHAT_IDS.split(",") if chat_id.strip()]
 
     POSTGRES_URI = os.getenv("POSTGRES_URI", "")
-    CRYPTO_PULSE_URL = os.getenv("CRYPTO_PULSE_URL", "")
-    BOT_INGEST_SECRET = os.getenv("BOT_INGEST_SECRET", "")
 
     BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
     PROXY_URL = os.getenv("PROXY_URL", "")

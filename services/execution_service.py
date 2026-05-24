@@ -33,6 +33,9 @@ class ExecutionService:
             and Config.BINANCE_API_SECRET
         )
 
+    def enabled(self) -> bool:
+        return self._enabled()
+
     def _headers(self) -> dict:
         return {
             "X-MBX-APIKEY": Config.BINANCE_API_KEY
@@ -417,7 +420,7 @@ class ExecutionService:
         self,
         symbol: str,
         direction: str,
-        entry_price: float,
+        tp1: float,
         tp2: float,
         tp3: float,
     ):
@@ -444,7 +447,7 @@ class ExecutionService:
         await self.replace_protection_orders(
             symbol=symbol,
             direction=direction,
-            stop_price=entry_price,
+            stop_price=tp1,
             take_profits=[
                 (tp2, tp2_qty),
                 (tp3, tp3_qty),
@@ -453,7 +456,7 @@ class ExecutionService:
 
         return {
             "qty": qty,
-            "new_stop": entry_price,
+            "new_stop": tp1,
             "tp2_qty": tp2_qty,
             "tp3_qty": tp3_qty,
         }
@@ -462,7 +465,7 @@ class ExecutionService:
         self,
         symbol: str,
         direction: str,
-        tp1: float,
+        tp2: float,
         tp3: float,
     ):
         qty = await self.get_position_qty(symbol)
@@ -476,7 +479,7 @@ class ExecutionService:
         await self.replace_protection_orders(
             symbol=symbol,
             direction=direction,
-            stop_price=tp1,
+            stop_price=tp2,
             take_profits=[
                 (tp3, qty),
             ],
@@ -484,7 +487,7 @@ class ExecutionService:
 
         return {
             "qty": qty,
-            "new_stop": tp1,
+            "new_stop": tp2,
             "tp3_qty": qty,
         }
 

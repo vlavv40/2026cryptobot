@@ -11,12 +11,15 @@ from services.btc_filter import BTCFilter
 from services.market_data import BinanceFuturesClient
 from services.news_guard import NewsGuard
 from services.paper_trader import PaperTrader
-from services import pulse_bridge
-from services.db import db
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
-from services.telegram_sender import format_result_message, send_signal, send_text_to_all
+from services.telegram_sender import (
+    format_result_message,
+    format_trade_update_message,
+    send_signal,
+    send_text_to_all,
+)
 from services.trade_tracker import TradeTracker
 from services.execution_service import ExecutionService
 from utils.logger import setup_logger
@@ -128,9 +131,9 @@ class MarketScanner:
         }
         await self.signal_log.add_signal(payload)
 
-    async def _track_new_signal(self, signal: Signal, signal_id: str | None = None):
+    async def _track_new_signal(self, signal: Signal):
         payload = {
-            "id": signal_id or getattr(signal, "id", str(uuid4())),
+            "id": str(uuid4()),
             "symbol": signal.symbol,
             "direction": signal.direction,
             "entry_min": signal.entry_min,
@@ -140,9 +143,6 @@ class MarketScanner:
             "tp2": signal.tp2,
             "tp3": signal.tp3,
             "score": signal.score,
-            "strategy": getattr(signal, "signal_type", "UNKNOWN"),
-            "reason": "; ".join(signal.reasons) if signal.reasons else None,
-            "indicators_json": signal.diagnostics,
         }
         await self.trade_tracker.add_signal(payload)
 
@@ -200,6 +200,134 @@ class MarketScanner:
             except Exception as error:
                 logger.exception(f"[NOTIFY ERROR] {item.get('symbol')} | {error}")
 
+    def _detect_trade_event(
+        self,
+        item: dict,
+        high: float,
+        low: float,
+    ) -> str | None:
+        direction = item["direction"]
+        stage = item.get("protection_stage") or "INITIAL"
+        stop_loss = float(item.get("active_stop_loss") or item["stop_loss"])
+        tp1 = float(item["tp1"])
+        tp2 = float(item["tp2"])
+        tp3 = float(item["tp3"])
+
+        if direction == "LONG":
+            if low <= stop_loss:
+                return "STOP_HIT"
+            if high >= tp3:
+                return "TP3_HIT"
+            if stage != "TP2_HIT" and high >= tp2:
+                return "TP2_HIT"
+            if stage == "INITIAL" and high >= tp1:
+                return "TP1_HIT"
+            return None
+
+        if high >= stop_loss:
+            return "STOP_HIT"
+        if low <= tp3:
+            return "TP3_HIT"
+        if stage != "TP2_HIT" and low <= tp2:
+            return "TP2_HIT"
+        if stage == "INITIAL" and low <= tp1:
+            return "TP1_HIT"
+
+        return None
+
+    async def _replace_protection_after_target(
+        self,
+        item: dict,
+        target_status: str,
+    ):
+        if not self.execution.enabled():
+            return None
+
+        symbol = item["symbol"]
+        direction = item["direction"]
+        tp1 = float(item["tp1"])
+        tp2 = float(item["tp2"])
+        tp3 = float(item["tp3"])
+
+        if target_status == "TP1_HIT":
+            return await self.execution.move_stop_after_tp1(
+                symbol,
+                direction,
+                tp1,
+                tp2,
+                tp3,
+            )
+
+        if target_status == "TP2_HIT":
+            return await self.execution.move_stop_after_tp2(
+                symbol,
+                direction,
+                tp2,
+                tp3,
+            )
+
+        return None
+
+    async def _cancel_protection_after_final_close(self, item: dict):
+        if not self.execution.enabled():
+            return None
+
+        symbol = item["symbol"]
+        return await self.execution.cancel_all_algo_orders(symbol)
+
+    async def _handle_trade_event(self, bot: Bot, item: dict, event: str):
+        symbol = item["symbol"]
+        direction = item["direction"]
+
+        if event in {"TP1_HIT", "TP2_HIT"}:
+            new_stop = float(item["tp1"] if event == "TP1_HIT" else item["tp2"])
+            protection_updated = True
+
+            if self.execution.enabled():
+                try:
+                    protection_updated = await self._replace_protection_after_target(item, event) is not None
+                except Exception as error:
+                    protection_updated = False
+                    logger.exception(f"[SMART SL ERROR] {symbol} {direction} {event} | {error}")
+
+            if not protection_updated:
+                logger.warning(
+                    f"[SMART SL] {symbol} {direction} {event} не подтвержден, этап не обновляю"
+                )
+                return
+
+            updated = await self.trade_tracker.mark_target_hit(
+                item["id"],
+                event,
+                new_stop,
+            )
+
+            if updated:
+                logger.info(f"[TRACKER] {symbol} {direction} -> {event}, signal remains OPEN")
+                await send_text_to_all(
+                    bot,
+                    Config.CHAT_IDS,
+                    format_trade_update_message(updated, event, self.execution.enabled()),
+                )
+            return
+
+        try:
+            if self.execution.enabled():
+                qty = await self.execution.get_position_qty(symbol)
+                if qty > 0:
+                    logger.warning(
+                        f"[AUTO TRADE CLEANUP] {symbol} {direction} {event} не подтвержден, позиция qty={qty}"
+                    )
+                    return
+
+            await self._cancel_protection_after_final_close(item)
+        except Exception as error:
+            logger.exception(f"[AUTO TRADE CLEANUP ERROR] {symbol} {direction} {event} | {error}")
+            return
+
+        await self.trade_tracker.update_signal(item["id"], event)
+        logger.info(f"[TRACKER] {symbol} {direction} -> {event}")
+
     async def check_open_signals(self, bot: Bot):
         open_signals = await self.trade_tracker.get_open_signals()
 
@@ -216,54 +344,10 @@ class MarketScanner:
                 high = float(last_closed["high"])
                 low = float(last_closed["low"])
 
-                stop_loss = float(item["stop_loss"])
-                tp1 = float(item["tp1"])
-                tp2 = float(item["tp2"])
-                tp3 = float(item["tp3"])
+                event = self._detect_trade_event(item, high, low)
 
-                new_status = None
-
-                if direction == "LONG":
-                    if low <= stop_loss:
-                        new_status = "STOP_HIT"
-                    elif high >= tp3:
-                        new_status = "TP3_HIT"
-                    elif high >= tp2:
-                        new_status = "TP2_HIT"
-                    elif high >= tp1:
-                        new_status = "TP1_HIT"
-                else:
-                    if high >= stop_loss:
-                        new_status = "STOP_HIT"
-                    elif low <= tp3:
-                        new_status = "TP3_HIT"
-                    elif low <= tp2:
-                        new_status = "TP2_HIT"
-                    elif low <= tp1:
-                        new_status = "TP1_HIT"
-
-                if new_status:
-                    updated = await self.trade_tracker.update_signal(item["id"], new_status)
-                    logger.info(f"[TRACKER] {symbol} {direction} -> {new_status}")
-                    current_price = {
-                        "STOP_HIT": stop_loss,
-                        "TP1_HIT": tp1,
-                        "TP2_HIT": tp2,
-                        "TP3_HIT": tp3,
-                    }.get(new_status)
-                    await pulse_bridge.update_signal(
-                        item["id"],
-                        new_status,
-                        current_price=current_price,
-                        realized_r=updated.get("realized_r") if updated else None,
-                        reason=new_status,
-                    )
-                    await pulse_bridge.log_bot(
-                        "INFO",
-                        symbol,
-                        new_status,
-                        f"{symbol} обновлен до {new_status}",
-                    )
+                if event:
+                    await self._handle_trade_event(bot, item, event)
 
             except Exception as error:
                 logger.exception(f"[TRACKER ERROR] {item.get('symbol')} | {error}")
@@ -398,12 +482,6 @@ class MarketScanner:
                     await self._update_paper_trades_from_symbol(symbol)
 
                     logger.info(f"Проверяю {symbol}")
-                    await pulse_bridge.log_bot(
-                        "INFO",
-                        symbol,
-                        "ANALYZING",
-                        f"Анализирую {symbol}",
-                    )
 
                     htf_df = await self.client.get_klines(symbol, Config.HTF_INTERVAL, Config.KLINES_LIMIT)
                     mtf_df = await self.client.get_klines(symbol, Config.MTF_INTERVAL, Config.KLINES_LIMIT)
@@ -449,13 +527,6 @@ class MarketScanner:
                             f"[SKIP] {symbol} | Причина: {result.skip_reason}"
                             f"{self._format_diag(result.diagnostics)}"
                         )
-                        await pulse_bridge.log_bot(
-                            "SKIP",
-                            symbol,
-                            "SKIP",
-                            f"{symbol} пропущен",
-                            result.skip_reason,
-                        )
 
                 except Exception as error:
                     logger.exception(f"[ERROR] Ошибка при анализе {symbol}: {error}")
@@ -475,25 +546,11 @@ class MarketScanner:
                 if await self._is_on_cooldown(signal.symbol, signal.direction):
                     logger.info(f"[COOLDOWN] {signal.symbol} {signal.direction} | повторный сигнал пропущен")
                     skip_counter["cooldown"] += 1
-                    await pulse_bridge.log_bot(
-                        "SKIP",
-                        signal.symbol,
-                        "SKIP",
-                        f"{signal.symbol} пропущен",
-                        "cooldown",
-                    )
                     continue
 
                 if await self._same_setup(signal):
                     logger.info(f"[DUPLICATE] {signal.symbol} {signal.direction} | тот же сетап, пропускаю")
                     skip_counter["duplicate setup"] += 1
-                    await pulse_bridge.log_bot(
-                        "SKIP",
-                        signal.symbol,
-                        "SKIP",
-                        f"{signal.symbol} пропущен",
-                        "duplicate setup",
-                    )
                     continue
 
                 final_signals.append(signal)
@@ -502,42 +559,20 @@ class MarketScanner:
 
             for signal in top_signals:
                 try:
-                    signal_id = str(uuid4())
-                    setattr(signal, "id", signal_id)
-                    reason = "; ".join(signal.reasons) if signal.reasons else None
-
                     if send_to_telegram:
                         await send_signal(bot, Config.CHAT_IDS, signal)
 
-                    if await db.is_autotrade_enabled():
+                    if Config.AUTO_TRADE:
                         await self.execution.execute_signal(
                             bot,
                             Config.CHAT_IDS,
                             signal,
                         )
-                    elif Config.AUTO_TRADE:
-                        logger.info(f"[AUTO TRADE PAUSED] {signal.symbol} | выключено в Crypto Pulse")
-                        await pulse_bridge.log_bot(
-                            "INFO",
-                            signal.symbol,
-                            "AUTOTRADE_PAUSED",
-                            f"{signal.symbol}: автоторговля выключена в Crypto Pulse",
-                            "enabled=false",
-                        )
 
                     await self._set_cooldown(signal.symbol, signal.direction)
                     await self._remember_signal(signal)
                     await self._log_signal_to_history(signal)
-                    await self._track_new_signal(signal, signal_id)
-
-                    await pulse_bridge.log_bot(
-                        "SIGNAL",
-                        signal.symbol,
-                        signal.direction,
-                        f"Найден сигнал {signal.symbol} {signal.direction}",
-                        reason,
-                    )
-                    await pulse_bridge.send_signal(signal)
+                    await self._track_new_signal(signal)
 
                     paper_trade = await self.paper.open_trade(signal)
                     if paper_trade:

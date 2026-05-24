@@ -45,50 +45,6 @@ class Database:
             """)
 
             await conn.execute("""
-            CREATE TABLE IF NOT EXISTS bot_logs (
-                id BIGSERIAL PRIMARY KEY,
-                level TEXT DEFAULT 'INFO',
-                symbol TEXT,
-                action TEXT NOT NULL,
-                message TEXT NOT NULL,
-                reason TEXT,
-                created_at TIMESTAMP DEFAULT NOW()
-            );
-            """)
-
-            await conn.execute("""
-            CREATE SEQUENCE IF NOT EXISTS bot_logs_id_seq;
-            """)
-
-            await conn.execute("""
-            ALTER TABLE bot_logs
-            ALTER COLUMN id DROP DEFAULT;
-            """)
-
-            await conn.execute("""
-            ALTER TABLE bot_logs
-            ALTER COLUMN id TYPE BIGINT
-            USING NULLIF(id::text, '')::bigint;
-            """)
-
-            await conn.execute("""
-            SELECT setval(
-                'bot_logs_id_seq',
-                GREATEST(COALESCE((SELECT MAX(id) FROM bot_logs), 0) + 1, 1),
-                false
-            );
-            """)
-
-            await conn.execute("""
-            ALTER TABLE bot_logs
-            ALTER COLUMN id SET DEFAULT nextval('bot_logs_id_seq');
-            """)
-
-            await conn.execute("""
-            ALTER SEQUENCE bot_logs_id_seq OWNED BY bot_logs.id;
-            """)
-
-            await conn.execute("""
             CREATE TABLE IF NOT EXISTS tracked_signals (
                 id TEXT PRIMARY KEY,
                 symbol TEXT NOT NULL,
@@ -110,15 +66,17 @@ class Database:
 
             await conn.execute("""
             ALTER TABLE tracked_signals
-            ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'bot',
-            ADD COLUMN IF NOT EXISTS strategy TEXT,
-            ADD COLUMN IF NOT EXISTS current_price DOUBLE PRECISION,
-            ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION,
-            ADD COLUMN IF NOT EXISTS reason TEXT,
-            ADD COLUMN IF NOT EXISTS indicators_json JSONB,
-            ADD COLUMN IF NOT EXISTS status_log_json JSONB DEFAULT '[]'::jsonb,
-            ADD COLUMN IF NOT EXISTS hidden BOOLEAN DEFAULT FALSE,
-            ADD COLUMN IF NOT EXISTS invalid_reason TEXT;
+            ADD COLUMN IF NOT EXISTS active_stop_loss DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS protection_stage TEXT NOT NULL DEFAULT 'INITIAL',
+            ADD COLUMN IF NOT EXISTS tp1_hit_at TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS tp2_hit_at TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS protection_updated_at TIMESTAMP;
+            """)
+
+            await conn.execute("""
+            UPDATE tracked_signals
+            SET active_stop_loss = stop_loss
+            WHERE active_stop_loss IS NULL;
             """)
 
             await conn.execute("""
@@ -159,29 +117,6 @@ class Database:
                 closed_at TIMESTAMP
             );
             """)
-
-    async def is_autotrade_enabled(self) -> bool:
-        if not Config.AUTO_TRADE:
-            return False
-
-        if self.pool is None:
-            return Config.AUTO_TRADE
-
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow("""
-                    SELECT
-                        COUNT(*)::int AS total,
-                        COALESCE(BOOL_OR(enabled), FALSE) AS enabled
-                    FROM autotrade_settings
-                """)
-
-            if not row or int(row["total"] or 0) == 0:
-                return Config.AUTO_TRADE
-
-            return bool(row["enabled"])
-        except Exception:
-            return Config.AUTO_TRADE
 
 
 db = Database()

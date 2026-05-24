@@ -1,7 +1,6 @@
 # services/trade_tracker.py
 
 import csv
-import json
 from pathlib import Path
 from datetime import datetime
 
@@ -10,13 +9,14 @@ from services.stats_analyzer import StatsAnalyzer
 
 
 class TradeTracker:
-    async def _calculate_realized_r(self, item: dict, status: str) -> float:
+    TP1_SHARE = 0.70
+    TP2_SHARE = 0.20
+    TP3_SHARE = 0.10
+
+    def _target_r(self, item: dict, price: float) -> float:
         entry_min = float(item["entry_min"])
         entry_max = float(item["entry_max"])
         stop_loss = float(item["stop_loss"])
-        tp1 = float(item["tp1"])
-        tp2 = float(item["tp2"])
-        tp3 = float(item["tp3"])
 
         entry_mid = (entry_min + entry_max) / 2.0
         direction = item["direction"]
@@ -25,26 +25,63 @@ class TradeTracker:
             risk = entry_mid - stop_loss
             if risk <= 0:
                 return 0.0
-            if status == "STOP_HIT":
-                return -1.0
-            if status == "TP1_HIT":
-                return round((tp1 - entry_mid) / risk, 4)
-            if status == "TP2_HIT":
-                return round((tp2 - entry_mid) / risk, 4)
-            if status == "TP3_HIT":
-                return round((tp3 - entry_mid) / risk, 4)
-        else:
-            risk = stop_loss - entry_mid
-            if risk <= 0:
-                return 0.0
-            if status == "STOP_HIT":
-                return -1.0
-            if status == "TP1_HIT":
-                return round((entry_mid - tp1) / risk, 4)
-            if status == "TP2_HIT":
-                return round((entry_mid - tp2) / risk, 4)
-            if status == "TP3_HIT":
-                return round((entry_mid - tp3) / risk, 4)
+            return (float(price) - entry_mid) / risk
+
+        risk = stop_loss - entry_mid
+        if risk <= 0:
+            return 0.0
+        return (entry_mid - float(price)) / risk
+
+    async def _calculate_realized_r(self, item: dict, status: str) -> float:
+        tp1 = float(item["tp1"])
+        tp2 = float(item["tp2"])
+        tp3 = float(item["tp3"])
+
+        tp1_r = self._target_r(item, tp1)
+        tp2_r = self._target_r(item, tp2)
+        tp3_r = self._target_r(item, tp3)
+
+        tp1_hit = bool(item.get("tp1_hit_at"))
+        tp2_hit = bool(item.get("tp2_hit_at"))
+
+        if status == "STOP_HIT":
+            stop_price = float(item.get("active_stop_loss") or item["stop_loss"])
+            stop_r = self._target_r(item, stop_price)
+
+            if tp2_hit:
+                return round(
+                    self.TP1_SHARE * tp1_r
+                    + self.TP2_SHARE * tp2_r
+                    + self.TP3_SHARE * stop_r,
+                    4,
+                )
+
+            if tp1_hit:
+                return round(
+                    self.TP1_SHARE * tp1_r
+                    + (self.TP2_SHARE + self.TP3_SHARE) * stop_r,
+                    4,
+                )
+
+            return round(stop_r, 4)
+
+        if status == "TP1_HIT":
+            return round(tp1_r, 4)
+
+        if status == "TP2_HIT":
+            return round(
+                self.TP1_SHARE * tp1_r
+                + (self.TP2_SHARE + self.TP3_SHARE) * tp2_r,
+                4,
+            )
+
+        if status == "TP3_HIT":
+            return round(
+                self.TP1_SHARE * tp1_r
+                + self.TP2_SHARE * tp2_r
+                + self.TP3_SHARE * tp3_r,
+                4,
+            )
 
         return 0.0
 
@@ -56,14 +93,10 @@ class TradeTracker:
                 INSERT INTO tracked_signals (
                     id, symbol, direction, entry_min, entry_max, stop_loss,
                     tp1, tp2, tp3, score, status, realized_r,
-                    created_at, closed_at, notified,
-                    strategy, reason, indicators_json
+                    created_at, closed_at, notified, active_stop_loss,
+                    protection_stage
                 )
-                VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                    'OPEN',NULL,$11,NULL,FALSE,
-                    $12,$13,$14::jsonb
-                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'OPEN',NULL,$11,NULL,FALSE,$6,'INITIAL')
                 """,
                 payload["id"],
                 payload["symbol"],
@@ -76,9 +109,6 @@ class TradeTracker:
                 payload["tp3"],
                 payload["score"],
                 datetime.utcnow(),
-                payload.get("strategy"),
-                payload.get("reason"),
-                json.dumps(payload.get("indicators_json") or {}, ensure_ascii=False),
             )
 
     async def get_open_signals(self) -> list[dict]:
@@ -94,6 +124,56 @@ class TradeTracker:
         async with db.pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM tracked_signals ORDER BY created_at DESC")
         return [dict(row) for row in rows]
+
+    async def mark_target_hit(self, target_id: str, target_status: str, new_stop_loss: float):
+        all_signals = await self.get_all_signals()
+        current = next((x for x in all_signals if x["id"] == target_id and x["status"] == "OPEN"), None)
+        if not current:
+            return None
+
+        now = datetime.utcnow()
+
+        assert db.pool is not None
+        async with db.pool.acquire() as conn:
+            if target_status == "TP1_HIT":
+                row = await conn.fetchrow(
+                    """
+                    UPDATE tracked_signals
+                    SET tp1_hit_at=COALESCE(tp1_hit_at, $1),
+                        active_stop_loss=$2,
+                        protection_stage='TP1_HIT',
+                        protection_updated_at=$1
+                    WHERE id=$3
+                      AND status='OPEN'
+                      AND protection_stage='INITIAL'
+                    RETURNING *
+                    """,
+                    now,
+                    new_stop_loss,
+                    target_id,
+                )
+            elif target_status == "TP2_HIT":
+                row = await conn.fetchrow(
+                    """
+                    UPDATE tracked_signals
+                    SET tp1_hit_at=COALESCE(tp1_hit_at, $1),
+                        tp2_hit_at=COALESCE(tp2_hit_at, $1),
+                        active_stop_loss=$2,
+                        protection_stage='TP2_HIT',
+                        protection_updated_at=$1
+                    WHERE id=$3
+                      AND status='OPEN'
+                      AND protection_stage <> 'TP2_HIT'
+                    RETURNING *
+                    """,
+                    now,
+                    new_stop_loss,
+                    target_id,
+                )
+            else:
+                return None
+
+        return dict(row) if row else None
 
     async def update_signal(self, target_id: str, new_status: str):
         all_signals = await self.get_all_signals()

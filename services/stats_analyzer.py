@@ -9,13 +9,29 @@ class StatsAnalyzer:
         total = len(self.trades)
         open_count = sum(1 for x in self.trades if x.get("status") == "OPEN")
         stop_hit = sum(1 for x in self.trades if x.get("status") == "STOP_HIT")
-        tp1_hit = sum(1 for x in self.trades if x.get("status") == "TP1_HIT")
-        tp2_hit = sum(1 for x in self.trades if x.get("status") == "TP2_HIT")
+        tp1_hit = sum(
+            1
+            for x in self.trades
+            if x.get("tp1_hit_at")
+            or x.get("status") in {"TP1_HIT", "TP2_HIT", "TP3_HIT"}
+        )
+        tp2_hit = sum(
+            1
+            for x in self.trades
+            if x.get("tp2_hit_at")
+            or x.get("status") in {"TP2_HIT", "TP3_HIT"}
+        )
         tp3_hit = sum(1 for x in self.trades if x.get("status") == "TP3_HIT")
 
         closed_items = [x for x in self.trades if x.get("status") != "OPEN"]
         closed = len(closed_items)
-        wins = tp1_hit + tp2_hit + tp3_hit
+
+        def is_win(item: dict) -> bool:
+            if item.get("realized_r") is not None:
+                return float(item.get("realized_r") or 0.0) > 0
+            return item.get("status") in {"TP1_HIT", "TP2_HIT", "TP3_HIT"}
+
+        wins = sum(1 for x in closed_items if is_win(x))
         winrate = round((wins / closed) * 100, 2) if closed > 0 else 0.0
 
         realized_r_values = [
