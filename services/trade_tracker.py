@@ -18,7 +18,7 @@ class TradeTracker:
         entry_max = float(item["entry_max"])
         stop_loss = float(item["stop_loss"])
 
-        entry_mid = (entry_min + entry_max) / 2.0
+        entry_mid = float(item.get("entry_price") or ((entry_min + entry_max) / 2.0))
         direction = item["direction"]
 
         if direction == "LONG":
@@ -94,13 +94,13 @@ class TradeTracker:
                     id, symbol, direction, entry_min, entry_max, stop_loss,
                     tp1, tp2, tp3, score, status, realized_r,
                     created_at, closed_at, notified, active_stop_loss,
-                    protection_stage, initial_position_qty, tp1_qty,
-                    tp2_qty, tp3_qty
+                    protection_stage, entry_price, initial_position_qty,
+                    tp1_qty, tp2_qty, tp3_qty
                 )
                 VALUES (
                     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
                     'OPEN',NULL,$11,NULL,FALSE,$6,'INITIAL',
-                    $12,$13,$14,$15
+                    $12,$13,$14,$15,$16
                 )
                 """,
                 payload["id"],
@@ -114,6 +114,7 @@ class TradeTracker:
                 payload["tp3"],
                 payload["score"],
                 datetime.utcnow(),
+                payload.get("entry_price"),
                 payload.get("initial_position_qty"),
                 payload.get("tp1_qty"),
                 payload.get("tp2_qty"),

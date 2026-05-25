@@ -133,23 +133,29 @@ def format_result_message(item: dict) -> str:
 def format_trade_update_message(item: dict, status: str, auto_managed: bool = True) -> str:
     symbol = item["symbol"]
     direction = item["direction"]
+    entry_price = item.get("entry_price")
+    breakeven_price = (
+        float(entry_price)
+        if entry_price is not None
+        else (float(item["entry_min"]) + float(item["entry_max"])) / 2.0
+    )
 
     if status == "TP1_HIT":
         title = "TP1 HIT"
-        subtitle = "70% позиции закрыто, стоп остатка перенесен на TP1"
+        subtitle = "70% позиции закрыто, стоп остатка перенесен в безубыток"
         if not auto_managed:
             subtitle = "Первая цель достигнута, сигнал остается в сопровождении"
-        stop_loss = item["tp1"]
+        stop_loss = breakeven_price
         remaining_targets = (
             f"TP2: <code>{_fmt_price(float(item['tp2']))}</code>\n"
             f"TP3: <code>{_fmt_price(float(item['tp3']))}</code>\n\n"
         )
     elif status == "TP2_HIT":
         title = "TP2 HIT"
-        subtitle = "Еще 20% позиции закрыто, стоп остатка перенесен на TP2"
+        subtitle = "Еще 20% позиции закрыто, стоп остатка перенесен на TP1"
         if not auto_managed:
             subtitle = "Вторая цель достигнута, сигнал остается в сопровождении"
-        stop_loss = item["tp2"]
+        stop_loss = item["tp1"]
         remaining_targets = (
             f"TP3: <code>{_fmt_price(float(item['tp3']))}</code>\n\n"
         )

@@ -145,6 +145,7 @@ class MarketScanner:
             "tp2": signal.tp2,
             "tp3": signal.tp3,
             "score": signal.score,
+            "entry_price": execution_report.get("entry_price"),
             "initial_position_qty": execution_report.get("qty"),
             "tp1_qty": execution_report.get("tp1_qty"),
             "tp2_qty": execution_report.get("tp2_qty"),
@@ -280,6 +281,13 @@ class MarketScanner:
 
         return "TP3_HIT" if mark_price <= tp3 else "STOP_HIT"
 
+    def _breakeven_price(self, item: dict) -> float:
+        entry_price = item.get("entry_price")
+        if entry_price is not None:
+            return float(entry_price)
+
+        return (float(item["entry_min"]) + float(item["entry_max"])) / 2.0
+
     def _detect_trade_event_from_position(
         self,
         item: dict,
@@ -324,9 +332,11 @@ class MarketScanner:
         tp3 = float(item["tp3"])
 
         if target_status == "TP1_HIT":
+            entry_price = self._breakeven_price(item)
             return await self.execution.move_stop_after_tp1(
                 symbol,
                 direction,
+                entry_price,
                 tp1,
                 tp2,
                 tp3,
@@ -336,7 +346,7 @@ class MarketScanner:
             return await self.execution.move_stop_after_tp2(
                 symbol,
                 direction,
-                tp2,
+                tp1,
                 tp3,
             )
 
@@ -360,7 +370,7 @@ class MarketScanner:
         direction = item["direction"]
 
         if event in {"TP1_HIT", "TP2_HIT"}:
-            new_stop = float(item["tp1"] if event == "TP1_HIT" else item["tp2"])
+            new_stop = self._breakeven_price(item) if event == "TP1_HIT" else float(item["tp1"])
             protection_updated = True
 
             if self.execution.enabled():

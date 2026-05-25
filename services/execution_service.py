@@ -428,6 +428,7 @@ class ExecutionService:
         self,
         symbol: str,
         direction: str,
+        entry_price: float,
         tp1: float,
         tp2: float,
         tp3: float,
@@ -455,7 +456,7 @@ class ExecutionService:
         await self.replace_protection_orders(
             symbol=symbol,
             direction=direction,
-            stop_price=tp1,
+            stop_price=entry_price,
             take_profits=[
                 (tp2, tp2_qty),
                 (tp3, tp3_qty),
@@ -464,7 +465,7 @@ class ExecutionService:
 
         return {
             "qty": qty,
-            "new_stop": tp1,
+            "new_stop": entry_price,
             "tp2_qty": tp2_qty,
             "tp3_qty": tp3_qty,
         }
@@ -473,7 +474,7 @@ class ExecutionService:
         self,
         symbol: str,
         direction: str,
-        tp2: float,
+        tp1: float,
         tp3: float,
     ):
         qty = await self.get_position_qty(symbol)
@@ -487,7 +488,7 @@ class ExecutionService:
         await self.replace_protection_orders(
             symbol=symbol,
             direction=direction,
-            stop_price=tp2,
+            stop_price=tp1,
             take_profits=[
                 (tp3, qty),
             ],
@@ -495,7 +496,7 @@ class ExecutionService:
 
         return {
             "qty": qty,
-            "new_stop": tp2,
+            "new_stop": tp1,
             "tp3_qty": qty,
         }
 
@@ -574,6 +575,9 @@ class ExecutionService:
                 qty,
             )
 
+            raw_entry_price = float(entry_order.get("avgPrice", 0) or 0)
+            executed_entry_price = raw_entry_price if raw_entry_price > 0 else price
+
             tp_qty_1 = self.round_qty(
                 qty * 0.70,
                 rules["step_size"],
@@ -647,6 +651,7 @@ class ExecutionService:
 
             return {
                 "entry_order": entry_order,
+                "entry_price": executed_entry_price,
                 "qty": qty,
                 "stop_price": stop_price,
                 "tp1": tp1,
