@@ -20,6 +20,7 @@ async def send_startup_message(bot: Bot):
         "✅ Бот запущен\n\n"
         f"Режим: {Config.STRATEGY_MODE}\n"
         f"Сканирование: каждые {Config.SCAN_INTERVAL_SECONDS} сек\n"
+        f"Сопровождение сделок: каждые {Config.OPEN_TRADE_MONITOR_INTERVAL_SECONDS} сек\n"
         f"Пары в анализе: до {Config.MAX_SYMBOLS_TO_SCAN}\n"
         f"Получателей: {len(Config.CHAT_IDS)}\n"
         "Хранение: PostgreSQL"
@@ -36,6 +37,16 @@ async def auto_scan_loop(bot: Bot, scanner: MarketScanner):
 
         logger.info(f"Жду {Config.SCAN_INTERVAL_SECONDS} секунд до следующего анализа...")
         await asyncio.sleep(Config.SCAN_INTERVAL_SECONDS)
+
+
+async def open_trade_monitor_loop(bot: Bot, scanner: MarketScanner):
+    while True:
+        try:
+            await scanner.monitor_open_signals(bot)
+        except Exception as error:
+            logger.exception(f"Ошибка в сопровождении открытых сделок: {error}")
+
+        await asyncio.sleep(Config.OPEN_TRADE_MONITOR_INTERVAL_SECONDS)
 
 
 async def main():
@@ -55,6 +66,7 @@ async def main():
 
     await send_startup_message(bot)
     asyncio.create_task(auto_scan_loop(bot, scanner))
+    asyncio.create_task(open_trade_monitor_loop(bot, scanner))
 
     logger.info("Бот запущен.")
     await dp.start_polling(bot)

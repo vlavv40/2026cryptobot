@@ -35,6 +35,7 @@ class Config:
     # SCANNER
     # =========================================================
     SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
+    OPEN_TRADE_MONITOR_INTERVAL_SECONDS = int(os.getenv("OPEN_TRADE_MONITOR_INTERVAL_SECONDS", "2"))
     MAX_SIGNALS_PER_SCAN = int(os.getenv("MAX_SIGNALS_PER_SCAN", "5"))
 
     USE_PRIORITY_SYMBOLS_ONLY = os.getenv("USE_PRIORITY_SYMBOLS_ONLY", "false").lower() == "true"

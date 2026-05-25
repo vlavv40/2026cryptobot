@@ -115,6 +115,14 @@ class ExecutionService:
 
         return float(data["price"])
 
+    async def get_mark_price(self, symbol: str) -> float:
+        data = await self._public_get(
+            "/fapi/v1/premiumIndex",
+            {"symbol": symbol},
+        )
+
+        return float(data["markPrice"])
+
     async def get_symbol_rules(self, symbol: str) -> dict:
         data = await self._public_get("/fapi/v1/exchangeInfo")
 
@@ -637,7 +645,17 @@ class ExecutionService:
                 f"[AUTO TRADE OPENED] {symbol} {direction}"
             )
 
-            return entry_order
+            return {
+                "entry_order": entry_order,
+                "qty": qty,
+                "stop_price": stop_price,
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp3": tp3,
+                "tp1_qty": tp_qty_1,
+                "tp2_qty": tp_qty_2,
+                "tp3_qty": tp_qty_3,
+            }
 
         except Exception as error:
 

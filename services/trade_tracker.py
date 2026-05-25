@@ -94,9 +94,14 @@ class TradeTracker:
                     id, symbol, direction, entry_min, entry_max, stop_loss,
                     tp1, tp2, tp3, score, status, realized_r,
                     created_at, closed_at, notified, active_stop_loss,
-                    protection_stage
+                    protection_stage, initial_position_qty, tp1_qty,
+                    tp2_qty, tp3_qty
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'OPEN',NULL,$11,NULL,FALSE,$6,'INITIAL')
+                VALUES (
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                    'OPEN',NULL,$11,NULL,FALSE,$6,'INITIAL',
+                    $12,$13,$14,$15
+                )
                 """,
                 payload["id"],
                 payload["symbol"],
@@ -109,6 +114,10 @@ class TradeTracker:
                 payload["tp3"],
                 payload["score"],
                 datetime.utcnow(),
+                payload.get("initial_position_qty"),
+                payload.get("tp1_qty"),
+                payload.get("tp2_qty"),
+                payload.get("tp3_qty"),
             )
 
     async def get_open_signals(self) -> list[dict]:

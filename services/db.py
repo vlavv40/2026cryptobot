@@ -70,7 +70,11 @@ class Database:
             ADD COLUMN IF NOT EXISTS protection_stage TEXT NOT NULL DEFAULT 'INITIAL',
             ADD COLUMN IF NOT EXISTS tp1_hit_at TIMESTAMP,
             ADD COLUMN IF NOT EXISTS tp2_hit_at TIMESTAMP,
-            ADD COLUMN IF NOT EXISTS protection_updated_at TIMESTAMP;
+            ADD COLUMN IF NOT EXISTS protection_updated_at TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS initial_position_qty DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS tp1_qty DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS tp2_qty DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS tp3_qty DOUBLE PRECISION;
             """)
 
             await conn.execute("""

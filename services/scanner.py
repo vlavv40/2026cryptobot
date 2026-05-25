@@ -39,6 +39,7 @@ class MarketScanner:
         self.btc_filter = BTCFilter()
         self.execution = ExecutionService()
         self._scan_lock = asyncio.Lock()
+        self._trade_monitor_lock = asyncio.Lock()
 
         self.last_cycle_info = {
             "started_at": None,
@@ -131,7 +132,8 @@ class MarketScanner:
         }
         await self.signal_log.add_signal(payload)
 
-    async def _track_new_signal(self, signal: Signal):
+    async def _track_new_signal(self, signal: Signal, execution_report: dict | None = None):
+        execution_report = execution_report or {}
         payload = {
             "id": str(uuid4()),
             "symbol": signal.symbol,
@@ -143,6 +145,10 @@ class MarketScanner:
             "tp2": signal.tp2,
             "tp3": signal.tp3,
             "score": signal.score,
+            "initial_position_qty": execution_report.get("qty"),
+            "tp1_qty": execution_report.get("tp1_qty"),
+            "tp2_qty": execution_report.get("tp2_qty"),
+            "tp3_qty": execution_report.get("tp3_qty"),
         }
         await self.trade_tracker.add_signal(payload)
 
@@ -235,6 +241,74 @@ class MarketScanner:
 
         return None
 
+    def _qty_tracking_ready(self, item: dict) -> bool:
+        return all(
+            item.get(key) is not None
+            for key in ("initial_position_qty", "tp1_qty", "tp2_qty", "tp3_qty")
+        )
+
+    def _qty_tolerance(self, item: dict) -> float:
+        initial_qty = float(item.get("initial_position_qty") or 0.0)
+        tp3_qty = float(item.get("tp3_qty") or 0.0)
+        return max(initial_qty * 0.01, tp3_qty * 0.5, 1e-12)
+
+    def _position_confirms_target(self, item: dict, target_status: str, position_qty: float) -> bool:
+        if not self._qty_tracking_ready(item):
+            return False
+
+        initial_qty = float(item["initial_position_qty"])
+        tp1_qty = float(item["tp1_qty"])
+        tp2_qty = float(item["tp2_qty"])
+        tolerance = self._qty_tolerance(item)
+
+        if target_status == "TP1_HIT":
+            expected_qty = max(initial_qty - tp1_qty, 0.0)
+            return position_qty <= expected_qty + tolerance
+
+        if target_status == "TP2_HIT":
+            expected_qty = max(initial_qty - tp1_qty - tp2_qty, 0.0)
+            return position_qty <= expected_qty + tolerance
+
+        return False
+
+    def _infer_final_event(self, item: dict, mark_price: float) -> str:
+        direction = item["direction"]
+        tp3 = float(item["tp3"])
+
+        if direction == "LONG":
+            return "TP3_HIT" if mark_price >= tp3 else "STOP_HIT"
+
+        return "TP3_HIT" if mark_price <= tp3 else "STOP_HIT"
+
+    def _detect_trade_event_from_position(
+        self,
+        item: dict,
+        position_qty: float,
+        mark_price: float,
+    ) -> str | None:
+        if not self._qty_tracking_ready(item):
+            return None
+
+        stage = item.get("protection_stage") or "INITIAL"
+        initial_qty = float(item["initial_position_qty"])
+        tp1_qty = float(item["tp1_qty"])
+        tp2_qty = float(item["tp2_qty"])
+        tolerance = self._qty_tolerance(item)
+
+        if position_qty <= tolerance:
+            return self._infer_final_event(item, mark_price)
+
+        tp1_remaining_qty = max(initial_qty - tp1_qty, 0.0)
+        tp2_remaining_qty = max(initial_qty - tp1_qty - tp2_qty, 0.0)
+
+        if stage != "TP2_HIT" and position_qty <= tp2_remaining_qty + tolerance:
+            return "TP2_HIT"
+
+        if stage == "INITIAL" and position_qty <= tp1_remaining_qty + tolerance:
+            return "TP1_HIT"
+
+        return None
+
     async def _replace_protection_after_target(
         self,
         item: dict,
@@ -275,7 +349,13 @@ class MarketScanner:
         symbol = item["symbol"]
         return await self.execution.cancel_all_algo_orders(symbol)
 
-    async def _handle_trade_event(self, bot: Bot, item: dict, event: str):
+    async def _handle_trade_event(
+        self,
+        bot: Bot,
+        item: dict,
+        event: str,
+        position_qty: float | None = None,
+    ):
         symbol = item["symbol"]
         direction = item["direction"]
 
@@ -284,6 +364,16 @@ class MarketScanner:
             protection_updated = True
 
             if self.execution.enabled():
+                if position_qty is None:
+                    position_qty = await self.execution.get_position_qty(symbol)
+
+                if not self._position_confirms_target(item, event, position_qty):
+                    logger.warning(
+                        f"[SMART SL] {symbol} {direction} {event} цена была достигнута, "
+                        f"но уменьшение позиции еще не подтверждено qty={position_qty}"
+                    )
+                    return
+
                 try:
                     protection_updated = await self._replace_protection_after_target(item, event) is not None
                 except Exception as error:
@@ -328,31 +418,52 @@ class MarketScanner:
         await self.trade_tracker.update_signal(item["id"], event)
         logger.info(f"[TRACKER] {symbol} {direction} -> {event}")
 
-    async def check_open_signals(self, bot: Bot):
-        open_signals = await self.trade_tracker.get_open_signals()
+    async def check_open_signals(self, bot: Bot, use_live_price: bool = False):
+        async with self._trade_monitor_lock:
+            open_signals = await self.trade_tracker.get_open_signals()
 
-        for item in open_signals:
-            try:
-                symbol = item["symbol"]
-                direction = item["direction"]
+            for item in open_signals:
+                try:
+                    symbol = item["symbol"]
 
-                ltf_df = await self.client.get_klines(symbol, Config.LTF_INTERVAL, 5)
-                if len(ltf_df) < 2:
-                    continue
+                    if use_live_price:
+                        mark_price = await self.execution.get_mark_price(symbol)
+                        position_qty = None
 
-                last_closed = ltf_df.iloc[-2]
-                high = float(last_closed["high"])
-                low = float(last_closed["low"])
+                        if self.execution.enabled():
+                            position_qty = await self.execution.get_position_qty(symbol)
+                            event = self._detect_trade_event_from_position(
+                                item,
+                                position_qty,
+                                mark_price,
+                            )
+                        else:
+                            event = self._detect_trade_event(item, mark_price, mark_price)
 
-                event = self._detect_trade_event(item, high, low)
+                        if event:
+                            await self._handle_trade_event(bot, item, event, position_qty)
+                        continue
 
-                if event:
-                    await self._handle_trade_event(bot, item, event)
+                    ltf_df = await self.client.get_klines(symbol, Config.LTF_INTERVAL, 5)
+                    if len(ltf_df) < 2:
+                        continue
 
-            except Exception as error:
-                logger.exception(f"[TRACKER ERROR] {item.get('symbol')} | {error}")
+                    last_closed = ltf_df.iloc[-2]
+                    high = float(last_closed["high"])
+                    low = float(last_closed["low"])
 
-        await self._send_closed_signal_notifications(bot)
+                    event = self._detect_trade_event(item, high, low)
+
+                    if event:
+                        await self._handle_trade_event(bot, item, event)
+
+                except Exception as error:
+                    logger.exception(f"[TRACKER ERROR] {item.get('symbol')} | {error}")
+
+            await self._send_closed_signal_notifications(bot)
+
+    async def monitor_open_signals(self, bot: Bot):
+        await self.check_open_signals(bot, use_live_price=True)
 
     def _format_diag(self, diagnostics: dict) -> str:
         if not diagnostics:
@@ -559,11 +670,13 @@ class MarketScanner:
 
             for signal in top_signals:
                 try:
+                    execution_report = None
+
                     if send_to_telegram:
                         await send_signal(bot, Config.CHAT_IDS, signal)
 
                     if Config.AUTO_TRADE:
-                        await self.execution.execute_signal(
+                        execution_report = await self.execution.execute_signal(
                             bot,
                             Config.CHAT_IDS,
                             signal,
@@ -572,7 +685,7 @@ class MarketScanner:
                     await self._set_cooldown(signal.symbol, signal.direction)
                     await self._remember_signal(signal)
                     await self._log_signal_to_history(signal)
-                    await self._track_new_signal(signal)
+                    await self._track_new_signal(signal, execution_report)
 
                     paper_trade = await self.paper.open_trade(signal)
                     if paper_trade:
