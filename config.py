@@ -73,6 +73,7 @@ class Config:
     # =========================================================
     NEWS_GUARD_ENABLED = os.getenv("NEWS_GUARD_ENABLED", "false").lower() == "true"
     NEWS_SENTIMENT_ENABLED = os.getenv("NEWS_SENTIMENT_ENABLED", "false").lower() == "true"
+    NEWS_SENTIMENT_BLOCKS_MARKET = os.getenv("NEWS_SENTIMENT_BLOCKS_MARKET", "true").lower() == "true"
 
     FMP_API_KEY = os.getenv("FMP_API_KEY", "")
     NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
@@ -88,6 +89,8 @@ class Config:
     SEND_STARTUP_MESSAGE = os.getenv("SEND_STARTUP_MESSAGE", "true").lower() == "true"
     SEND_CYCLE_MESSAGES = os.getenv("SEND_CYCLE_MESSAGES", "false").lower() == "true"
     SEND_NEWS_BLOCK_MESSAGE = os.getenv("SEND_NEWS_BLOCK_MESSAGE", "true").lower() == "true"
+    SEND_NEWS_CLEAR_MESSAGE = os.getenv("SEND_NEWS_CLEAR_MESSAGE", "true").lower() == "true"
+    NEWS_BLOCK_MESSAGE_COOLDOWN_MINUTES = int(os.getenv("NEWS_BLOCK_MESSAGE_COOLDOWN_MINUTES", "60"))
 
     # =========================================================
     # ENTRY / RSI FILTERS
@@ -102,6 +105,18 @@ class Config:
 
     HARD_MIN_RESISTANCE_GAP = float(os.getenv("HARD_MIN_RESISTANCE_GAP", "0.0045"))
     HARD_MIN_SUPPORT_GAP = float(os.getenv("HARD_MIN_SUPPORT_GAP", "0.0045"))
+
+    ADVANCED_LEVELS_FILTER_ENABLED = os.getenv("ADVANCED_LEVELS_FILTER_ENABLED", "false").lower() == "true"
+    BLOCK_MIDDLE_OF_RANGE = os.getenv("BLOCK_MIDDLE_OF_RANGE", "true").lower() == "true"
+    MIN_RANGE_SIZE_FOR_MIDDLE_FILTER = float(os.getenv("MIN_RANGE_SIZE_FOR_MIDDLE_FILTER", "0.012"))
+    TARGET_ROOM_FILTER_ENABLED = os.getenv("TARGET_ROOM_FILTER_ENABLED", "false").lower() == "true"
+    MIN_TP1_LEVEL_CLEARANCE = float(os.getenv("MIN_TP1_LEVEL_CLEARANCE", "0.001"))
+    STRICT_PULLBACK_FILTER_ENABLED = os.getenv("STRICT_PULLBACK_FILTER_ENABLED", "false").lower() == "true"
+    PULLBACK_LOOKBACK_BARS = int(os.getenv("PULLBACK_LOOKBACK_BARS", "10"))
+    PULLBACK_EMA_TOUCH_TOLERANCE = float(os.getenv("PULLBACK_EMA_TOUCH_TOLERANCE", "0.003"))
+    BREAKOUT_RETEST_ATR_TOLERANCE_ENABLED = os.getenv("BREAKOUT_RETEST_ATR_TOLERANCE_ENABLED", "false").lower() == "true"
+    BREAKOUT_RETEST_ATR_MULTIPLIER = float(os.getenv("BREAKOUT_RETEST_ATR_MULTIPLIER", "0.35"))
+    BREAKOUT_RETEST_MIN_TOLERANCE_PCT = float(os.getenv("BREAKOUT_RETEST_MIN_TOLERANCE_PCT", "0.0015"))
 
     # =========================================================
     # SIGNAL CLASSIFICATION
@@ -151,7 +166,7 @@ class Config:
     MAX_ENTRY_BODY_ATR = float(os.getenv("MAX_ENTRY_BODY_ATR", "1.20"))
     MAX_BAD_WICK_RATIO = float(os.getenv("MAX_BAD_WICK_RATIO", "0.45"))
 
-        # =========================================================
+    # =========================================================
     # AUTO TRADE / BINANCE EXECUTION
     # =========================================================
     BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
@@ -162,3 +177,7 @@ class Config:
     AUTO_TRADE_LEVERAGE = int(os.getenv("AUTO_TRADE_LEVERAGE", "3"))
     AUTO_TRADE_MARGIN_TYPE = os.getenv("AUTO_TRADE_MARGIN_TYPE", "ISOLATED").upper()
     AUTO_TRADE_ONE_POSITION_PER_SYMBOL = os.getenv("AUTO_TRADE_ONE_POSITION_PER_SYMBOL", "true").lower() == "true"
+    MAX_MARKET_ENTRY_GAP = float(os.getenv("MAX_MARKET_ENTRY_GAP", "0.002"))
+    AUTO_TRADE_WAIT_FOR_ENTRY_ENABLED = os.getenv("AUTO_TRADE_WAIT_FOR_ENTRY_ENABLED", "true").lower() == "true"
+    AUTO_TRADE_ENTRY_WAIT_MINUTES = int(os.getenv("AUTO_TRADE_ENTRY_WAIT_MINUTES", "60"))
+    PENDING_ENTRY_CHECK_INTERVAL_SECONDS = int(os.getenv("PENDING_ENTRY_CHECK_INTERVAL_SECONDS", "15"))

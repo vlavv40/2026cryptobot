@@ -45,11 +45,21 @@ class NewsGuard:
         if Config.NEWS_SENTIMENT_ENABLED:
             sentiment_bias, negative_count, positive_count = await self._load_crypto_headline_bias()
 
-        blocked = macro_block_reason is not None
+        sentiment_block_reason = None
+        if (
+            Config.NEWS_SENTIMENT_BLOCKS_MARKET
+            and sentiment_bias == "BEARISH"
+        ):
+            sentiment_block_reason = (
+                f"crypto news sentiment block: negative={negative_count}, "
+                f"positive={positive_count}"
+            )
+
+        blocked = macro_block_reason is not None or sentiment_block_reason is not None
 
         return NewsGuardDecision(
             blocked=blocked,
-            reason=macro_block_reason or "ok",
+            reason=macro_block_reason or sentiment_block_reason or "ok",
             sentiment_bias=sentiment_bias,
             macro_events=macro_events,
             negative_count=negative_count,
@@ -103,6 +113,20 @@ class NewsGuard:
             "boe",
             "boj",
             "gdp",
+            "trump",
+            "tariff",
+            "tariffs",
+            "trade war",
+            "iran",
+            "israel",
+            "hormuz",
+            "oil shock",
+            "sanction",
+            "sanctions",
+            "war",
+            "conflict",
+            "attack",
+            "strike",
         ]
 
         for event in events:
@@ -147,7 +171,9 @@ class NewsGuard:
 
         query = (
             '(bitcoin OR btc OR ethereum OR eth OR crypto OR cryptocurrency '
-            'OR binance OR sec OR etf OR fed OR rates)'
+            'OR binance OR sec OR etf OR fed OR rates OR trump OR tariff '
+            'OR tariffs OR iran OR israel OR oil OR hormuz OR war OR conflict '
+            'OR sanctions)'
         )
 
         url = "https://newsapi.org/v2/everything"
@@ -171,40 +197,47 @@ class NewsGuard:
             if not isinstance(articles, list):
                 return "NEUTRAL", 0, 0
 
-            negative_words = [
-                "ban", "lawsuit", "hack", "war", "attack", "collapse",
-                "liquidation", "recession", "crackdown", "fraud", "selloff",
-                "tariff", "conflict", "sanction",
-            ]
-            positive_words = [
-                "approval", "launch", "growth", "surge", "bullish", "rally",
-                "adoption", "buy", "inflow", "upgrade", "partnership",
-                "easing", "cut rates",
-            ]
-
-            negative_count = 0
-            positive_count = 0
-
-            for article in articles:
-                text = (
-                    f"{article.get('title', '')} {article.get('description', '')}"
-                ).lower()
-
-                if any(word in text for word in negative_words):
-                    negative_count += 1
-                if any(word in text for word in positive_words):
-                    positive_count += 1
-
-            if negative_count - positive_count >= Config.NEWS_SENTIMENT_BLOCK_THRESHOLD:
-                return "BEARISH", negative_count, positive_count
-
-            if positive_count - negative_count >= Config.NEWS_SENTIMENT_BLOCK_THRESHOLD:
-                return "BULLISH", negative_count, positive_count
-
-            return "NEUTRAL", negative_count, positive_count
+            return self._classify_headline_bias(articles)
 
         except Exception:
             return "NEUTRAL", 0, 0
+
+    def _classify_headline_bias(self, articles: list[dict]) -> tuple[str, int, int]:
+        negative_words = [
+            "ban", "lawsuit", "hack", "war", "attack", "collapse",
+            "liquidation", "recession", "crackdown", "fraud", "selloff",
+            "tariff", "tariffs", "trade war", "conflict", "sanction",
+            "sanctions", "iran", "israel", "hormuz", "oil shock",
+            "strike", "missile", "panic", "crash", "plunge", "dump",
+            "risk-off", "escalation",
+        ]
+        positive_words = [
+            "approval", "launch", "growth", "surge", "bullish", "rally",
+            "adoption", "buy", "inflow", "upgrade", "partnership",
+            "easing", "cut rates", "peace", "ceasefire", "deal",
+            "agreement", "de-escalation",
+        ]
+
+        negative_count = 0
+        positive_count = 0
+
+        for article in articles:
+            text = (
+                f"{article.get('title', '')} {article.get('description', '')}"
+            ).lower()
+
+            if any(word in text for word in negative_words):
+                negative_count += 1
+            if any(word in text for word in positive_words):
+                positive_count += 1
+
+        if negative_count - positive_count >= Config.NEWS_SENTIMENT_BLOCK_THRESHOLD:
+            return "BEARISH", negative_count, positive_count
+
+        if positive_count - negative_count >= Config.NEWS_SENTIMENT_BLOCK_THRESHOLD:
+            return "BULLISH", negative_count, positive_count
+
+        return "NEUTRAL", negative_count, positive_count
 
     def _parse_dt(self, value: str) -> Optional[datetime]:
         value = value.strip()

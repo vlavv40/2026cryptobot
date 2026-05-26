@@ -3,6 +3,8 @@ from typing import Optional
 
 import pandas as pd
 
+from config import Config
+
 
 @dataclass
 class MarketStructure:
@@ -119,16 +121,29 @@ class StructureEngine:
         ema20 = float(ltf_last["ema20"])
         ema50 = float(ltf_last["ema50"])
         prev_close = float(ltf_prev["close"])
+        lookback = max(Config.PULLBACK_LOOKBACK_BARS, 3)
+        recent = ltf_df.iloc[-lookback - 2:-2]
+        touch_tolerance = Config.PULLBACK_EMA_TOUCH_TOLERANCE
 
         # LONG
         if htf_structure.trend == "UP":
-            pullback_ok = (
-                close_ >= ema20
-                or close_ >= ema50
-                or (close_ >= ema20 * 0.995)
-            )
+            if Config.STRICT_PULLBACK_FILTER_ENABLED:
+                pullback_ok = (
+                    not recent.empty
+                    and (
+                        (recent["low"] <= recent["ema20"] * (1 + touch_tolerance))
+                        | (recent["low"] <= recent["ema50"] * (1 + touch_tolerance))
+                    ).any()
+                    and close_ >= min(ema20, ema50)
+                )
+            else:
+                pullback_ok = (
+                    close_ >= ema20
+                    or close_ >= ema50
+                    or (close_ >= ema20 * 0.995)
+                )
 
-            momentum_hint = close_ >= prev_close
+            momentum_hint = close_ > prev_close if Config.STRICT_PULLBACK_FILTER_ENABLED else close_ >= prev_close
 
             if mtf_structure.trend in ["UP", "RANGE"] and pullback_ok and momentum_hint:
                 return SetupContext(
@@ -139,13 +154,23 @@ class StructureEngine:
 
         # SHORT
         if htf_structure.trend == "DOWN":
-            pullback_ok = (
-                close_ <= ema20
-                or close_ <= ema50
-                or (close_ <= ema20 * 1.005)
-            )
+            if Config.STRICT_PULLBACK_FILTER_ENABLED:
+                pullback_ok = (
+                    not recent.empty
+                    and (
+                        (recent["high"] >= recent["ema20"] * (1 - touch_tolerance))
+                        | (recent["high"] >= recent["ema50"] * (1 - touch_tolerance))
+                    ).any()
+                    and close_ <= max(ema20, ema50)
+                )
+            else:
+                pullback_ok = (
+                    close_ <= ema20
+                    or close_ <= ema50
+                    or (close_ <= ema20 * 1.005)
+                )
 
-            momentum_hint = close_ <= prev_close
+            momentum_hint = close_ < prev_close if Config.STRICT_PULLBACK_FILTER_ENABLED else close_ <= prev_close
 
             if mtf_structure.trend in ["DOWN", "RANGE"] and pullback_ok and momentum_hint:
                 return SetupContext(
@@ -181,9 +206,20 @@ class StructureEngine:
         ltf_low = float(ltf_last["low"])
         ltf_high = float(ltf_last["high"])
         prev_close = float(ltf_prev["close"])
+        atr = float(ltf_last.get("atr", 0.0) or 0.0)
 
-        tolerance_up = range_high * 0.0025
-        tolerance_down = range_low * 0.0025
+        if Config.BREAKOUT_RETEST_ATR_TOLERANCE_ENABLED:
+            tolerance_up = max(
+                atr * Config.BREAKOUT_RETEST_ATR_MULTIPLIER,
+                range_high * Config.BREAKOUT_RETEST_MIN_TOLERANCE_PCT,
+            )
+            tolerance_down = max(
+                atr * Config.BREAKOUT_RETEST_ATR_MULTIPLIER,
+                range_low * Config.BREAKOUT_RETEST_MIN_TOLERANCE_PCT,
+            )
+        else:
+            tolerance_up = range_high * 0.0025
+            tolerance_down = range_low * 0.0025
 
         broke_up = float(mtf_last["close"]) > range_high
         retest_up = ltf_low <= (range_high + tolerance_up) and ltf_close >= (range_high - tolerance_up)

@@ -115,6 +115,26 @@ class ExecutionService:
 
         return float(data["price"])
 
+    def _entry_zone_skip_reason(self, signal, current_price: float) -> str | None:
+        entry_min = min(float(signal.entry_min), float(signal.entry_max))
+        entry_max = max(float(signal.entry_min), float(signal.entry_max))
+
+        gap = max(float(Config.MAX_MARKET_ENTRY_GAP), 0.0)
+        allowed_min = entry_min * (1 - gap)
+        allowed_max = entry_max * (1 + gap)
+
+        if allowed_min <= current_price <= allowed_max:
+            return None
+
+        return (
+            f"текущая цена {current_price:.8g} вне зоны входа "
+            f"{entry_min:.8g}-{entry_max:.8g} "
+            f"(допуск {gap * 100:.2f}%)"
+        )
+
+    def entry_zone_skip_reason(self, signal, current_price: float) -> str | None:
+        return self._entry_zone_skip_reason(signal, current_price)
+
     async def get_mark_price(self, symbol: str) -> float:
         data = await self._public_get(
             "/fapi/v1/premiumIndex",
@@ -526,9 +546,42 @@ class ExecutionService:
 
                     return None
 
-            await self.set_margin_and_leverage(symbol)
-
             price = await self.get_price(symbol)
+            skip_reason = self._entry_zone_skip_reason(signal, price)
+
+            if skip_reason:
+                logger.info(
+                    f"[AUTO TRADE SKIPPED] {symbol} {direction} | {skip_reason}"
+                )
+
+                waiting_text = "Сигнал не исполнен market-ордером."
+                if Config.AUTO_TRADE_WAIT_FOR_ENTRY_ENABLED:
+                    waiting_text = (
+                        "Market-ордер не отправлен. "
+                        f"Бот будет ждать возврата в зону входа до "
+                        f"{Config.AUTO_TRADE_ENTRY_WAIT_MINUTES} мин."
+                    )
+
+                await send_text_to_all(
+                    bot,
+                    chat_ids,
+                    "⏸ <b>AUTO TRADE SKIPPED</b>\n\n"
+                    f"#{symbol}\n"
+                    f"{direction}\n\n"
+                    f"{skip_reason}\n\n"
+                    f"{waiting_text}"
+                )
+
+                if Config.AUTO_TRADE_WAIT_FOR_ENTRY_ENABLED:
+                    return {
+                        "status": "WAITING_ENTRY",
+                        "skip_reason": skip_reason,
+                        "current_price": price,
+                    }
+
+                return None
+
+            await self.set_margin_and_leverage(symbol)
 
             rules = await self.get_symbol_rules(symbol)
 

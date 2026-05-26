@@ -1,4 +1,18 @@
+from pathlib import Path
+
 from aiogram import Bot
+from aiogram.types import FSInputFile
+
+from utils.logger import setup_logger
+
+
+logger = setup_logger()
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+SIGNAL_IMAGE_PATHS = {
+    "LONG": BASE_DIR / "assets" / "signal_long.png",
+    "SHORT": BASE_DIR / "assets" / "signal_short.png",
+}
 
 
 def _fmt_price(value: float) -> str:
@@ -190,9 +204,33 @@ async def send_text_to_all(bot: Bot, chat_ids: list[str], text: str):
                 text=text,
                 parse_mode="HTML",
             )
-        except Exception:
-            continue
+        except Exception as error:
+            logger.warning(f"[TELEGRAM SEND ERROR] chat_id={chat_id}: {error}")
 
 
 async def send_signal(bot: Bot, chat_ids: list[str], signal):
-    await send_text_to_all(bot, chat_ids, format_signal(signal))
+    text = format_signal(signal)
+    image_path = SIGNAL_IMAGE_PATHS.get(signal.direction)
+
+    if image_path and image_path.exists():
+        for chat_id in chat_ids:
+            try:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=FSInputFile(image_path),
+                    caption=text,
+                    parse_mode="HTML",
+                )
+            except Exception as error:
+                logger.warning(f"[TELEGRAM PHOTO ERROR] chat_id={chat_id}: {error}")
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        parse_mode="HTML",
+                    )
+                except Exception as fallback_error:
+                    logger.warning(f"[TELEGRAM SEND ERROR] chat_id={chat_id}: {fallback_error}")
+        return
+
+    await send_text_to_all(bot, chat_ids, text)

@@ -13,6 +13,7 @@ from services.indicators import (
     add_support_resistance,
     atr_ratio,
 )
+from services.levels import LevelsAnalyzer
 from services.structure_engine import StructureEngine
 from services.market_regime import MarketRegimeAnalyzer
 
@@ -45,6 +46,7 @@ class SignalEngine:
     def __init__(self):
         self.structure_engine = StructureEngine()
         self.regime_analyzer = MarketRegimeAnalyzer()
+        self.levels_analyzer = LevelsAnalyzer()
 
     # =========================================================
     # PREPARE DATA
@@ -267,6 +269,74 @@ class SignalEngine:
                 support_gap = (last_close - float(support)) / last_close
                 if support_gap < Config.HARD_MIN_SUPPORT_GAP:
                     return False, "entry quality: слишком близко поддержка"
+
+        return True, ""
+
+    # =========================================================
+    # LEVELS CONTEXT
+    # =========================================================
+
+    def _check_levels_context(self, direction: str, ltf_df: pd.DataFrame) -> tuple[bool, str, dict]:
+        if not Config.ADVANCED_LEVELS_FILTER_ENABLED:
+            return True, "", {}
+
+        report = self.levels_analyzer.analyze(ltf_df, direction)
+        diagnostics = {
+            "range_high": report.range_high,
+            "range_low": report.range_low,
+            "range_size_pct": report.range_size_pct,
+            "in_middle_of_range": report.in_middle_of_range,
+            "nearest_resistance": report.nearest_resistance,
+            "nearest_support": report.nearest_support,
+            "nearest_resistance_gap": report.resistance_gap_pct,
+            "nearest_support_gap": report.support_gap_pct,
+            "levels_reason": report.reason,
+        }
+
+        if (
+            Config.BLOCK_MIDDLE_OF_RANGE
+            and report.in_middle_of_range
+            and report.range_size_pct >= Config.MIN_RANGE_SIZE_FOR_MIDDLE_FILTER
+        ):
+            return False, "levels: цена в середине локального диапазона", diagnostics
+
+        if (
+            direction == "LONG"
+            and report.resistance_gap_pct is not None
+            and report.resistance_gap_pct < Config.HARD_MIN_RESISTANCE_GAP
+        ):
+            return False, "levels: слишком близко ближайшее сопротивление", diagnostics
+
+        if (
+            direction == "SHORT"
+            and report.support_gap_pct is not None
+            and report.support_gap_pct < Config.HARD_MIN_SUPPORT_GAP
+        ):
+            return False, "levels: слишком близко ближайшая поддержка", diagnostics
+
+        return True, "", diagnostics
+
+    def _check_target_room(self, direction: str, levels: dict, diagnostics: dict) -> tuple[bool, str]:
+        if not Config.TARGET_ROOM_FILTER_ENABLED:
+            return True, ""
+
+        clearance = max(Config.MIN_TP1_LEVEL_CLEARANCE, 0.0)
+
+        if direction == "LONG":
+            resistance = diagnostics.get("nearest_resistance")
+            if resistance is None:
+                return True, ""
+
+            if float(levels["tp1"]) >= float(resistance) * (1 - clearance):
+                return False, "levels: TP1 слишком близко к сопротивлению или за ним"
+
+        else:
+            support = diagnostics.get("nearest_support")
+            if support is None:
+                return True, ""
+
+            if float(levels["tp1"]) <= float(support) * (1 + clearance):
+                return False, "levels: TP1 слишком близко к поддержке или за ней"
 
         return True, ""
 
@@ -647,6 +717,16 @@ class SignalEngine:
                 diagnostics=diagnostics,
             )
 
+        levels_ok, levels_reason, levels_diag = self._check_levels_context(setup.direction, ltf_df)
+        diagnostics.update(levels_diag)
+        if not levels_ok:
+            return SignalCheckResult(
+                symbol=symbol,
+                signal=None,
+                skip_reason=levels_reason,
+                diagnostics=diagnostics,
+            )
+
         confirm_ok, confirm_reason = self._check_confirmation(setup.direction, ltf_df)
         if not confirm_ok:
             return SignalCheckResult(
@@ -680,6 +760,19 @@ class SignalEngine:
                 symbol=symbol,
                 signal=None,
                 skip_reason="не удалось построить entry/stop/tp",
+                diagnostics=diagnostics,
+            )
+
+        target_room_ok, target_room_reason = self._check_target_room(
+            setup.direction,
+            levels,
+            diagnostics,
+        )
+        if not target_room_ok:
+            return SignalCheckResult(
+                symbol=symbol,
+                signal=None,
+                skip_reason=target_room_reason,
                 diagnostics=diagnostics,
             )
 

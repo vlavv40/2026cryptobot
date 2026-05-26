@@ -45,6 +45,26 @@ class Database:
             """)
 
             await conn.execute("""
+            CREATE TABLE IF NOT EXISTS pending_entries (
+                key TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                payload JSONB NOT NULL,
+                status TEXT NOT NULL DEFAULT 'WAITING',
+                reason TEXT,
+                created_at TIMESTAMP NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                last_checked_at TIMESTAMP,
+                opened_at TIMESTAMP
+            );
+            """)
+
+            await conn.execute("""
+            CREATE INDEX IF NOT EXISTS pending_entries_status_expires_idx
+            ON pending_entries (status, expires_at);
+            """)
+
+            await conn.execute("""
             CREATE TABLE IF NOT EXISTS tracked_signals (
                 id TEXT PRIMARY KEY,
                 symbol TEXT NOT NULL,
