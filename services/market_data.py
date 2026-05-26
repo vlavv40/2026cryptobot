@@ -24,8 +24,6 @@ class BinanceFuturesClient:
         async with self._make_session() as session:
             async with session.get(url, timeout=20) as response:
                 data = await response.json()
-                if response.status >= 400:
-                    raise RuntimeError(f"Binance exchangeInfo error {response.status}: {data}")
 
         symbols = []
         for symbol_info in data.get("symbols", []):
@@ -44,8 +42,6 @@ class BinanceFuturesClient:
         async with self._make_session() as session:
             async with session.get(url, timeout=20) as response:
                 data = await response.json()
-                if response.status >= 400:
-                    raise RuntimeError(f"Binance ticker error {response.status}: {data}")
 
         if isinstance(data, dict):
             return []
@@ -115,11 +111,6 @@ class BinanceFuturesClient:
                 timeout=20,
             ) as response:
                 data = await response.json()
-                if response.status >= 400:
-                    raise RuntimeError(f"Binance klines error {response.status}: {data}")
-
-        if not isinstance(data, list):
-            raise RuntimeError(f"Binance klines returned unexpected payload: {data}")
 
         df = pd.DataFrame(
             data,

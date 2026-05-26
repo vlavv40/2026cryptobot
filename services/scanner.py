@@ -1,5 +1,4 @@
 import asyncio
-import html
 from collections import Counter
 from datetime import datetime
 from typing import List
@@ -11,7 +10,6 @@ from config import Config
 from services.btc_filter import BTCFilter
 from services.market_data import BinanceFuturesClient
 from services.news_guard import NewsGuard
-from services.pending_entry_store import PendingEntryStore
 from services.paper_trader import PaperTrader
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
@@ -37,13 +35,11 @@ class MarketScanner:
         self.state = StateStore()
         self.signal_log = SignalLogStore()
         self.trade_tracker = TradeTracker()
-        self.pending_entries = PendingEntryStore()
         self.paper = PaperTrader()
         self.btc_filter = BTCFilter()
         self.execution = ExecutionService()
         self._scan_lock = asyncio.Lock()
         self._trade_monitor_lock = asyncio.Lock()
-        self._last_pending_entry_check_at = None
 
         self.last_cycle_info = {
             "started_at": None,
@@ -276,9 +272,6 @@ class MarketScanner:
 
         return False
 
-    def _auto_management_ready(self, item: dict) -> bool:
-        return self.execution.enabled() and self._qty_tracking_ready(item)
-
     def _infer_final_event(self, item: dict, mark_price: float) -> str:
         direction = item["direction"]
         tp3 = float(item["tp3"])
@@ -379,9 +372,8 @@ class MarketScanner:
         if event in {"TP1_HIT", "TP2_HIT"}:
             new_stop = self._breakeven_price(item) if event == "TP1_HIT" else float(item["tp1"])
             protection_updated = True
-            auto_managed = self._auto_management_ready(item)
 
-            if auto_managed:
+            if self.execution.enabled():
                 if position_qty is None:
                     position_qty = await self.execution.get_position_qty(symbol)
 
@@ -415,12 +407,12 @@ class MarketScanner:
                 await send_text_to_all(
                     bot,
                     Config.CHAT_IDS,
-                    format_trade_update_message(updated, event, auto_managed),
+                    format_trade_update_message(updated, event, self.execution.enabled()),
                 )
             return
 
         try:
-            if self._auto_management_ready(item):
+            if self.execution.enabled():
                 qty = await self.execution.get_position_qty(symbol)
                 if qty > 0:
                     logger.warning(
@@ -428,12 +420,7 @@ class MarketScanner:
                     )
                     return
 
-                await self._cancel_protection_after_final_close(item)
-            elif self.execution.enabled():
-                logger.warning(
-                    f"[AUTO TRADE CLEANUP] {symbol} {direction} {event} без qty tracking; "
-                    "обновляю только статус сигнала"
-                )
+            await self._cancel_protection_after_final_close(item)
         except Exception as error:
             logger.exception(f"[AUTO TRADE CLEANUP ERROR] {symbol} {direction} {event} | {error}")
             return
@@ -453,7 +440,7 @@ class MarketScanner:
                         mark_price = await self.execution.get_mark_price(symbol)
                         position_qty = None
 
-                        if self._auto_management_ready(item):
+                        if self.execution.enabled():
                             position_qty = await self.execution.get_position_qty(symbol)
                             event = self._detect_trade_event_from_position(
                                 item,
@@ -487,97 +474,6 @@ class MarketScanner:
 
     async def monitor_open_signals(self, bot: Bot):
         await self.check_open_signals(bot, use_live_price=True)
-        await self.check_pending_entries(bot)
-
-    def _is_waiting_entry_report(self, execution_report: dict | None) -> bool:
-        return bool(
-            execution_report
-            and execution_report.get("status") == "WAITING_ENTRY"
-        )
-
-    async def _store_pending_entry(self, signal: Signal, execution_report: dict):
-        reason = execution_report.get("skip_reason", "цена вне зоны входа")
-        await self.pending_entries.upsert_waiting(
-            signal,
-            Config.AUTO_TRADE_ENTRY_WAIT_MINUTES,
-            reason,
-        )
-        logger.info(
-            f"[WAITING ENTRY] {signal.symbol} {signal.direction} сохранен до "
-            f"{Config.AUTO_TRADE_ENTRY_WAIT_MINUTES} мин. | {reason}"
-        )
-
-    def _pending_entry_check_due(self) -> bool:
-        now = datetime.utcnow()
-        if self._last_pending_entry_check_at is None:
-            self._last_pending_entry_check_at = now
-            return True
-
-        elapsed = (now - self._last_pending_entry_check_at).total_seconds()
-        if elapsed < Config.PENDING_ENTRY_CHECK_INTERVAL_SECONDS:
-            return False
-
-        self._last_pending_entry_check_at = now
-        return True
-
-    async def check_pending_entries(self, bot: Bot):
-        if not Config.AUTO_TRADE or not Config.AUTO_TRADE_WAIT_FOR_ENTRY_ENABLED:
-            return
-
-        if not self._pending_entry_check_due():
-            return
-
-        now = datetime.utcnow()
-        entries = await self.pending_entries.get_waiting()
-
-        for entry in entries:
-            key = entry["key"]
-            signal = entry["signal"]
-
-            try:
-                if entry["expires_at"] <= now:
-                    await self.pending_entries.mark_expired(key)
-                    await send_text_to_all(
-                        bot,
-                        Config.CHAT_IDS,
-                        "⌛ <b>WAITING ENTRY EXPIRED</b>\n\n"
-                        f"#{signal.symbol}\n"
-                        f"{signal.direction}\n\n"
-                        "Цена не вернулась в зону входа вовремя. "
-                        "Сигнал снят с ожидания.",
-                    )
-                    logger.info(f"[WAITING ENTRY EXPIRED] {signal.symbol} {signal.direction}")
-                    continue
-
-                current_price = await self.execution.get_price(signal.symbol)
-                skip_reason = self.execution.entry_zone_skip_reason(signal, current_price)
-                if skip_reason:
-                    await self.pending_entries.touch_checked(key)
-                    logger.info(
-                        f"[WAITING ENTRY] {signal.symbol} {signal.direction} еще вне зоны | {skip_reason}"
-                    )
-                    continue
-
-                execution_report = await self.execution.execute_signal(
-                    bot,
-                    Config.CHAT_IDS,
-                    signal,
-                )
-
-                if self._is_waiting_entry_report(execution_report):
-                    await self.pending_entries.touch_checked(key)
-                    continue
-
-                if execution_report:
-                    await self.pending_entries.mark_opened(key)
-                    await self._track_new_signal(signal, execution_report)
-                    logger.info(f"[WAITING ENTRY OPENED] {signal.symbol} {signal.direction}")
-                else:
-                    await self.pending_entries.touch_checked(key)
-
-            except Exception as error:
-                await self.pending_entries.touch_checked(key)
-                logger.exception(f"[WAITING ENTRY ERROR] {signal.symbol} {signal.direction} | {error}")
 
     def _format_diag(self, diagnostics: dict) -> str:
         if not diagnostics:
@@ -595,9 +491,6 @@ class MarketScanner:
             ("RR", "rr"),
             ("ResGap", "resistance_gap"),
             ("SupGap", "support_gap"),
-            ("NResGap", "nearest_resistance_gap"),
-            ("NSupGap", "nearest_support_gap"),
-            ("Range", "range_size_pct"),
             ("BTC", "btc_bias"),
             ("Setup", "setup_type"),
         ]:
@@ -663,97 +556,6 @@ class MarketScanner:
             logger.exception(f"[BTC FILTER ERROR] {error}")
             return "NEUTRAL"
 
-    async def _send_news_block_notification_if_needed(self, bot: Bot, news_decision):
-        active_key = "news_guard:block_state"
-        notify_key = "news_guard:block_notify"
-
-        previous = await self.state.get_last_signal(active_key)
-        already_active = bool(previous and previous.get("active"))
-        notification_on_cooldown = await self.state.get_cooldown(notify_key) is not None
-
-        await self.state.set_last_signal(
-            active_key,
-            {
-                "active": True,
-                "reason": news_decision.reason,
-                "sentiment": news_decision.sentiment_bias,
-                "negative_count": news_decision.negative_count,
-                "positive_count": news_decision.positive_count,
-                "impact_score": news_decision.impact_score,
-                "severity": news_decision.severity,
-                "impact_reasons": news_decision.impact_reasons,
-                "updated_at": datetime.utcnow().isoformat(),
-                "started_at": previous.get("started_at") if already_active else datetime.utcnow().isoformat(),
-            },
-        )
-
-        if notification_on_cooldown:
-            return
-
-        status_text = "обнаружен новостной риск"
-        if already_active:
-            status_text = "новостной риск всё ещё активен"
-
-        reasons_text = ""
-        if news_decision.impact_reasons:
-            reasons_text = "\n".join(
-                f"• {html.escape(reason)}" for reason in news_decision.impact_reasons[:3]
-            )
-            reasons_text = f"\n\n<b>Заголовки</b>\n{reasons_text}"
-
-        await send_text_to_all(
-            bot,
-            Config.CHAT_IDS,
-            "🛑 <b>News block</b>\n\n"
-            f"{status_text}\n"
-            f"Причина: {news_decision.reason}\n"
-            f"Sentiment: {news_decision.sentiment_bias}\n"
-            f"Severity: {news_decision.severity}\n"
-            f"Impact score: {news_decision.impact_score}\n"
-            f"Negative headlines: {news_decision.negative_count}\n"
-            f"Positive headlines: {news_decision.positive_count}"
-            f"{reasons_text}\n\n"
-            f"Сканирование новых входов на паузе. "
-            f"Повтор напоминания не чаще чем раз в "
-            f"{Config.NEWS_BLOCK_MESSAGE_COOLDOWN_MINUTES} мин.",
-        )
-        await self.state.set_cooldown(
-            notify_key,
-            Config.NEWS_BLOCK_MESSAGE_COOLDOWN_MINUTES,
-        )
-
-    async def _send_news_clear_notification_if_needed(self, bot: Bot, news_decision):
-        active_key = "news_guard:block_state"
-        previous = await self.state.get_last_signal(active_key)
-
-        if not previous or not previous.get("active"):
-            return
-
-        await self.state.set_last_signal(
-            active_key,
-            {
-                "active": False,
-                "last_reason": previous.get("reason", "unknown"),
-                "sentiment": news_decision.sentiment_bias,
-                "impact_score": news_decision.impact_score,
-                "severity": news_decision.severity,
-                "cleared_at": datetime.utcnow().isoformat(),
-            },
-        )
-
-        if not Config.SEND_NEWS_CLEAR_MESSAGE:
-            return
-
-        await send_text_to_all(
-            bot,
-            Config.CHAT_IDS,
-            "✅ <b>News block снят</b>\n\n"
-            "Новостной фильтр больше не блокирует новые входы.\n"
-            f"Sentiment: {news_decision.sentiment_bias}\n"
-            f"Severity: {news_decision.severity}\n"
-            f"Impact score: {news_decision.impact_score}",
-        )
-
     async def scan_market(self, bot: Bot, send_to_telegram: bool = True) -> List[SignalCheckResult]:
         async with self._scan_lock:
             await self.check_open_signals(bot)
@@ -765,7 +567,6 @@ class MarketScanner:
             logger.info(
                 f"Старт сканирования рынка... режим={Config.STRATEGY_MODE} | "
                 f"news_block={news_decision.blocked} | sentiment={news_decision.sentiment_bias} | "
-                f"severity={news_decision.severity} | impact={news_decision.impact_score} | "
                 f"news_reason={news_decision.reason} | btc_bias={btc_bias}"
             )
 
@@ -778,21 +579,20 @@ class MarketScanner:
                     "news_block": True,
                     "news_reason": news_decision.reason,
                     "sentiment": news_decision.sentiment_bias,
-                    "news_severity": news_decision.severity,
-                    "news_impact_score": news_decision.impact_score,
                     "btc_bias": btc_bias,
                     "skip_summary": {"news block": 1},
                     "top_signal_symbols": [],
                 }
 
                 if send_to_telegram and Config.SEND_NEWS_BLOCK_MESSAGE:
-                    await self._send_news_block_notification_if_needed(bot, news_decision)
+                    await send_text_to_all(
+                        bot,
+                        Config.CHAT_IDS,
+                        f"🛑 News block\n\nПричина: {news_decision.reason}\nSentiment: {news_decision.sentiment_bias}",
+                    )
 
                 await self._log_paper_stats()
                 return []
-
-            if send_to_telegram:
-                await self._send_news_clear_notification_if_needed(bot, news_decision)
 
             symbols = await self._load_symbols_for_scan()
             results: List[SignalCheckResult] = []
@@ -823,29 +623,13 @@ class MarketScanner:
                             )
 
                     if result.signal:
-                        score_adjusted_by_news = False
                         if news_decision.sentiment_bias == "BEARISH" and result.signal.direction == "LONG":
                             result.signal.score = round(result.signal.score - 0.7, 1)
                             result.signal.reasons.append("news guard: bearish headlines reduce LONG confidence")
-                            score_adjusted_by_news = True
 
                         if news_decision.sentiment_bias == "BULLISH" and result.signal.direction == "SHORT":
                             result.signal.score = round(result.signal.score - 0.7, 1)
                             result.signal.reasons.append("news guard: bullish headlines reduce SHORT confidence")
-                            score_adjusted_by_news = True
-
-                        if score_adjusted_by_news:
-                            rr = float(result.signal.diagnostics.get("rr", 0.0) or 0.0)
-                            signal_type = self.engine.classify_signal(result.signal.score, rr)
-                            if not signal_type:
-                                result = SignalCheckResult(
-                                    symbol=symbol,
-                                    signal=None,
-                                    skip_reason="news sentiment снизил score ниже порога",
-                                    diagnostics=result.signal.diagnostics,
-                                )
-                            else:
-                                result.signal.signal_type = signal_type
 
                     results.append(result)
 
@@ -911,16 +695,7 @@ class MarketScanner:
                     await self._set_cooldown(signal.symbol, signal.direction)
                     await self._remember_signal(signal)
                     await self._log_signal_to_history(signal)
-
-                    if self._is_waiting_entry_report(execution_report):
-                        await self._store_pending_entry(signal, execution_report)
-                    elif not Config.AUTO_TRADE or execution_report is not None:
-                        await self._track_new_signal(signal, execution_report)
-                    else:
-                        logger.info(
-                            f"[TRACKER] {signal.symbol} {signal.direction} не добавлен в live tracking: "
-                            "auto trade не был исполнен"
-                        )
+                    await self._track_new_signal(signal, execution_report)
 
                     paper_trade = await self.paper.open_trade(signal)
                     if paper_trade:
@@ -943,8 +718,6 @@ class MarketScanner:
                 "news_block": False,
                 "news_reason": news_decision.reason,
                 "sentiment": news_decision.sentiment_bias,
-                "news_severity": news_decision.severity,
-                "news_impact_score": news_decision.impact_score,
                 "btc_bias": btc_bias,
                 "skip_summary": dict(skip_counter),
                 "top_signal_symbols": [s.symbol for s in top_signals],

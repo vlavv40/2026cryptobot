@@ -1,5 +1,4 @@
 from collections import defaultdict
-from datetime import date, datetime
 
 
 class StatsAnalyzer:
@@ -100,29 +99,15 @@ class StatsAnalyzer:
             "SHORT": build("SHORT"),
         }
 
-    def _to_date(self, value) -> date | None:
-        if not value:
-            return None
-
-        if isinstance(value, datetime):
-            return value.date()
-
-        if isinstance(value, date):
-            return value
-
-        try:
-            return datetime.fromisoformat(str(value)[:10]).date()
-        except ValueError:
-            return None
-
     def grouped_by_day(self) -> list[dict]:
         grouped = defaultdict(list)
 
         for item in self.trades:
-            created_date = self._to_date(item.get("created_at"))
-            if not created_date:
+            created_at = item.get("created_at")
+            if not created_at:
                 continue
-            day = created_date.isoformat()
+
+            day = created_at[:10]
             grouped[day].append(item)
 
         rows = []
@@ -137,12 +122,12 @@ class StatsAnalyzer:
         grouped = defaultdict(list)
 
         for item in self.trades:
-            created_date = self._to_date(item.get("created_at"))
-            if not created_date:
+            created_at = item.get("created_at")
+            if not created_at:
                 continue
 
-            iso = created_date.isocalendar()
-            iso_week = f"{iso.year}-W{iso.week:02d}"
+            week_key = created_at[:10]
+            iso_week = week_key[:8]
             grouped[iso_week].append(item)
 
         rows = []
