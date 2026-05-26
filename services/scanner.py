@@ -1,4 +1,5 @@
 import asyncio
+import html
 from collections import Counter
 from datetime import datetime
 from typing import List
@@ -678,6 +679,9 @@ class MarketScanner:
                 "sentiment": news_decision.sentiment_bias,
                 "negative_count": news_decision.negative_count,
                 "positive_count": news_decision.positive_count,
+                "impact_score": news_decision.impact_score,
+                "severity": news_decision.severity,
+                "impact_reasons": news_decision.impact_reasons,
                 "updated_at": datetime.utcnow().isoformat(),
                 "started_at": previous.get("started_at") if already_active else datetime.utcnow().isoformat(),
             },
@@ -690,13 +694,25 @@ class MarketScanner:
         if already_active:
             status_text = "новостной риск всё ещё активен"
 
+        reasons_text = ""
+        if news_decision.impact_reasons:
+            reasons_text = "\n".join(
+                f"• {html.escape(reason)}" for reason in news_decision.impact_reasons[:3]
+            )
+            reasons_text = f"\n\n<b>Заголовки</b>\n{reasons_text}"
+
         await send_text_to_all(
             bot,
             Config.CHAT_IDS,
             "🛑 <b>News block</b>\n\n"
             f"{status_text}\n"
             f"Причина: {news_decision.reason}\n"
-            f"Sentiment: {news_decision.sentiment_bias}\n\n"
+            f"Sentiment: {news_decision.sentiment_bias}\n"
+            f"Severity: {news_decision.severity}\n"
+            f"Impact score: {news_decision.impact_score}\n"
+            f"Negative headlines: {news_decision.negative_count}\n"
+            f"Positive headlines: {news_decision.positive_count}"
+            f"{reasons_text}\n\n"
             f"Сканирование новых входов на паузе. "
             f"Повтор напоминания не чаще чем раз в "
             f"{Config.NEWS_BLOCK_MESSAGE_COOLDOWN_MINUTES} мин.",
@@ -719,6 +735,8 @@ class MarketScanner:
                 "active": False,
                 "last_reason": previous.get("reason", "unknown"),
                 "sentiment": news_decision.sentiment_bias,
+                "impact_score": news_decision.impact_score,
+                "severity": news_decision.severity,
                 "cleared_at": datetime.utcnow().isoformat(),
             },
         )
@@ -731,7 +749,9 @@ class MarketScanner:
             Config.CHAT_IDS,
             "✅ <b>News block снят</b>\n\n"
             "Новостной фильтр больше не блокирует новые входы.\n"
-            f"Sentiment: {news_decision.sentiment_bias}",
+            f"Sentiment: {news_decision.sentiment_bias}\n"
+            f"Severity: {news_decision.severity}\n"
+            f"Impact score: {news_decision.impact_score}",
         )
 
     async def scan_market(self, bot: Bot, send_to_telegram: bool = True) -> List[SignalCheckResult]:
@@ -745,6 +765,7 @@ class MarketScanner:
             logger.info(
                 f"Старт сканирования рынка... режим={Config.STRATEGY_MODE} | "
                 f"news_block={news_decision.blocked} | sentiment={news_decision.sentiment_bias} | "
+                f"severity={news_decision.severity} | impact={news_decision.impact_score} | "
                 f"news_reason={news_decision.reason} | btc_bias={btc_bias}"
             )
 
@@ -757,6 +778,8 @@ class MarketScanner:
                     "news_block": True,
                     "news_reason": news_decision.reason,
                     "sentiment": news_decision.sentiment_bias,
+                    "news_severity": news_decision.severity,
+                    "news_impact_score": news_decision.impact_score,
                     "btc_bias": btc_bias,
                     "skip_summary": {"news block": 1},
                     "top_signal_symbols": [],
@@ -920,6 +943,8 @@ class MarketScanner:
                 "news_block": False,
                 "news_reason": news_decision.reason,
                 "sentiment": news_decision.sentiment_bias,
+                "news_severity": news_decision.severity,
+                "news_impact_score": news_decision.impact_score,
                 "btc_bias": btc_bias,
                 "skip_summary": dict(skip_counter),
                 "top_signal_symbols": [s.symbol for s in top_signals],

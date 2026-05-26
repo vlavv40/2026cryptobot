@@ -7,6 +7,10 @@ from typing import Optional
 import aiohttp
 
 from config import Config
+from utils.logger import setup_logger
+
+
+logger = setup_logger()
 
 
 @dataclass
@@ -17,6 +21,20 @@ class NewsGuardDecision:
     macro_events: list[dict]
     negative_count: int
     positive_count: int
+    impact_score: int
+    severity: str
+    impact_reasons: list[str]
+
+
+@dataclass
+class HeadlineImpact:
+    sentiment_bias: str
+    negative_count: int
+    positive_count: int
+    impact_score: int
+    positive_score: int
+    severity: str
+    reasons: list[str]
 
 
 class NewsGuard:
@@ -33,6 +51,9 @@ class NewsGuard:
                 macro_events=[],
                 negative_count=0,
                 positive_count=0,
+                impact_score=0,
+                severity="LOW",
+                impact_reasons=[],
             )
 
         macro_events = await self._load_macro_events()
@@ -41,17 +62,28 @@ class NewsGuard:
         sentiment_bias = "NEUTRAL"
         negative_count = 0
         positive_count = 0
+        impact_score = 0
+        severity = "LOW"
+        impact_reasons = []
 
         if Config.NEWS_SENTIMENT_ENABLED:
-            sentiment_bias, negative_count, positive_count = await self._load_crypto_headline_bias()
+            headline_impact = await self._load_crypto_headline_bias()
+            sentiment_bias = headline_impact.sentiment_bias
+            negative_count = headline_impact.negative_count
+            positive_count = headline_impact.positive_count
+            impact_score = headline_impact.impact_score
+            severity = headline_impact.severity
+            impact_reasons = headline_impact.reasons
 
         sentiment_block_reason = None
         if (
             Config.NEWS_SENTIMENT_BLOCKS_MARKET
+            and severity in {"HIGH", "CRITICAL"}
             and sentiment_bias == "BEARISH"
         ):
             sentiment_block_reason = (
-                f"crypto news sentiment block: negative={negative_count}, "
+                f"crypto news impact block: severity={severity}, "
+                f"score={impact_score}, negative={negative_count}, "
                 f"positive={positive_count}"
             )
 
@@ -64,6 +96,9 @@ class NewsGuard:
             macro_events=macro_events,
             negative_count=negative_count,
             positive_count=positive_count,
+            impact_score=impact_score,
+            severity=severity,
+            impact_reasons=impact_reasons,
         )
 
     async def _load_macro_events(self) -> list[dict]:
@@ -83,14 +118,17 @@ class NewsGuard:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=20) as response:
                     if response.status != 200:
+                        logger.warning(f"[NEWS GUARD] FMP error status={response.status}")
                         return []
                     data = await response.json()
 
             if not isinstance(data, list):
+                logger.warning(f"[NEWS GUARD] FMP unexpected payload type={type(data).__name__}")
                 return []
 
             return data
-        except Exception:
+        except Exception as error:
+            logger.warning(f"[NEWS GUARD] FMP request failed: {error}")
             return []
 
     def _macro_block_reason(self, events: list[dict]) -> Optional[str]:
@@ -165,9 +203,9 @@ class NewsGuard:
 
         return None
 
-    async def _load_crypto_headline_bias(self) -> tuple[str, int, int]:
+    async def _load_crypto_headline_bias(self) -> HeadlineImpact:
         if not self.news_api_key:
-            return "NEUTRAL", 0, 0
+            return HeadlineImpact("NEUTRAL", 0, 0, 0, 0, "LOW", [])
 
         query = (
             '(bitcoin OR btc OR ethereum OR eth OR crypto OR cryptocurrency '
@@ -190,19 +228,53 @@ class NewsGuard:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, timeout=20) as response:
                     if response.status != 200:
-                        return "NEUTRAL", 0, 0
+                        logger.warning(f"[NEWS GUARD] NewsAPI error status={response.status}")
+                        return HeadlineImpact("NEUTRAL", 0, 0, 0, 0, "LOW", [])
                     data = await response.json()
 
             articles = data.get("articles", [])
             if not isinstance(articles, list):
-                return "NEUTRAL", 0, 0
+                logger.warning("[NEWS GUARD] NewsAPI returned non-list articles")
+                return HeadlineImpact("NEUTRAL", 0, 0, 0, 0, "LOW", [])
 
             return self._classify_headline_bias(articles)
 
-        except Exception:
-            return "NEUTRAL", 0, 0
+        except Exception as error:
+            logger.warning(f"[NEWS GUARD] NewsAPI request failed: {error}")
+            return HeadlineImpact("NEUTRAL", 0, 0, 0, 0, "LOW", [])
 
-    def _classify_headline_bias(self, articles: list[dict]) -> tuple[str, int, int]:
+    def _classify_headline_bias(self, articles: list[dict]) -> HeadlineImpact:
+        trusted_sources = [
+            "reuters", "bloomberg", "associated press", "ap news", "cnbc",
+            "wall street journal", "wsj", "financial times", "ft",
+            "coindesk", "the block", "cointelegraph", "decrypt",
+        ]
+        market_terms = [
+            "bitcoin", "btc", "ethereum", "eth", "crypto", "cryptocurrency",
+            "binance", "coinbase", "solana", "xrp", "etf", "markets",
+            "market", "stocks", "nasdaq", "s&p", "sp500", "risk-off",
+            "liquidation", "liquidations",
+        ]
+        market_move_words = [
+            "fall", "falls", "fell", "drop", "drops", "dropped", "slide",
+            "slides", "slump", "slumps", "plunge", "plunges", "tumble",
+            "tumbles", "selloff", "sell-off", "crash", "crashes", "dump",
+            "dumps", "rout", "liquidation", "liquidations", "risk-off",
+            "volatility", "wipes out",
+        ]
+        critical_words = [
+            "fomc", "cpi", "pce", "nfp", "nonfarm payrolls", "powell",
+            "rate decision", "interest rate", "federal reserve",
+            "sec lawsuit", "sues", "charges", "criminal probe",
+            "bankruptcy", "insolvent", "insolvency", "withdrawal halt",
+            "halt withdrawals", "depeg", "de-pegged", "hack", "exploit",
+            "etf rejected", "etf denial",
+        ]
+        geopolitical_words = [
+            "trump", "tariff", "tariffs", "trade war", "iran", "israel",
+            "hormuz", "oil shock", "sanction", "sanctions", "war",
+            "conflict", "attack", "strike", "missile", "escalation",
+        ]
         negative_words = [
             "ban", "lawsuit", "hack", "war", "attack", "collapse",
             "liquidation", "recession", "crackdown", "fraud", "selloff",
@@ -220,24 +292,84 @@ class NewsGuard:
 
         negative_count = 0
         positive_count = 0
+        impact_score = 0
+        positive_score = 0
+        reasons = []
+        seen_titles = set()
+        critical_article_seen = False
 
         for article in articles:
+            title = str(article.get("title", "") or "")
+            normalized_title = title.strip().lower()
+            if not normalized_title or normalized_title in seen_titles:
+                continue
+            seen_titles.add(normalized_title)
+
+            source_name = str((article.get("source") or {}).get("name", "") or "").lower()
             text = (
-                f"{article.get('title', '')} {article.get('description', '')}"
+                f"{title} {article.get('description', '')} {source_name}"
             ).lower()
 
-            if any(word in text for word in negative_words):
+            trusted = any(source in source_name for source in trusted_sources)
+            has_market_context = any(word in text for word in market_terms)
+            has_market_move = any(word in text for word in market_move_words)
+            has_critical = any(word in text for word in critical_words)
+            has_geopolitical = any(word in text for word in geopolitical_words)
+            has_negative = any(word in text for word in negative_words)
+            has_positive = any(word in text for word in positive_words)
+
+            article_score = 0
+            if has_critical:
+                article_score += 4 if has_market_context or trusted else 2
+            if has_market_context and has_market_move:
+                article_score += 3
+            if has_market_context and has_negative:
+                article_score += 2
+            if has_geopolitical and (has_market_context or has_market_move):
+                article_score += 2
+            if trusted and article_score > 0:
+                article_score += 1
+
+            # Political/geopolitical chatter without a market or crypto link is noise.
+            if has_geopolitical and not has_market_context and not has_market_move and not has_critical:
+                article_score = 0
+
+            if article_score > 0:
                 negative_count += 1
-            if any(word in text for word in positive_words):
+                impact_score += min(article_score, 6)
+                if has_critical and (has_market_context or has_market_move or trusted):
+                    critical_article_seen = True
+                if len(reasons) < 3:
+                    reasons.append(f"{source_name or 'unknown'}: {title[:120]}")
+
+            positive_article_score = 0
+            if has_market_context and has_positive:
+                positive_article_score += 2
+            if trusted and positive_article_score > 0:
+                positive_article_score += 1
+
+            if positive_article_score > 0:
                 positive_count += 1
+                positive_score += min(positive_article_score, 4)
 
-        if negative_count - positive_count >= Config.NEWS_SENTIMENT_BLOCK_THRESHOLD:
-            return "BEARISH", negative_count, positive_count
+        net_score = impact_score - positive_score
 
-        if positive_count - negative_count >= Config.NEWS_SENTIMENT_BLOCK_THRESHOLD:
-            return "BULLISH", negative_count, positive_count
+        if (
+            net_score >= Config.NEWS_SENTIMENT_CRITICAL_THRESHOLD
+            or (critical_article_seen and net_score >= Config.NEWS_SENTIMENT_BLOCK_THRESHOLD)
+        ):
+            return HeadlineImpact("BEARISH", negative_count, positive_count, impact_score, positive_score, "CRITICAL", reasons)
 
-        return "NEUTRAL", negative_count, positive_count
+        if net_score >= Config.NEWS_SENTIMENT_BLOCK_THRESHOLD:
+            return HeadlineImpact("BEARISH", negative_count, positive_count, impact_score, positive_score, "HIGH", reasons)
+
+        if net_score >= Config.NEWS_SENTIMENT_WARN_THRESHOLD:
+            return HeadlineImpact("BEARISH", negative_count, positive_count, impact_score, positive_score, "MEDIUM", reasons)
+
+        if positive_score - impact_score >= Config.NEWS_SENTIMENT_WARN_THRESHOLD:
+            return HeadlineImpact("BULLISH", negative_count, positive_count, impact_score, positive_score, "LOW", reasons)
+
+        return HeadlineImpact("NEUTRAL", negative_count, positive_count, impact_score, positive_score, "LOW", reasons)
 
     def _parse_dt(self, value: str) -> Optional[datetime]:
         value = value.strip()
