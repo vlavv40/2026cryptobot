@@ -1,9 +1,13 @@
 # services/trade_tracker.py
 
 import csv
+import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
+import pandas as pd
+
+from config import Config
 from services.db import db
 from services.stats_analyzer import StatsAnalyzer
 
@@ -129,14 +133,43 @@ class TradeTracker:
             )
         return [dict(row) for row in rows]
 
-    async def get_all_signals(self) -> list[dict]:
+    async def _stats_reset_at(self):
         assert db.pool is not None
         async with db.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM tracked_signals ORDER BY created_at DESC")
+            value = await conn.fetchval(
+                "SELECT value FROM strategy_parameters WHERE key='statistics_reset_at'"
+            )
+
+        if not value:
+            return None
+
+        try:
+            if isinstance(value, str):
+                value = json.loads(value)
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            return None
+
+    async def get_all_signals(self, include_before_reset: bool = False) -> list[dict]:
+        assert db.pool is not None
+        reset_at = None if include_before_reset else await self._stats_reset_at()
+
+        async with db.pool.acquire() as conn:
+            if reset_at:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM tracked_signals
+                    WHERE created_at >= $1
+                    ORDER BY created_at DESC
+                    """,
+                    reset_at,
+                )
+            else:
+                rows = await conn.fetch("SELECT * FROM tracked_signals ORDER BY created_at DESC")
         return [dict(row) for row in rows]
 
     async def mark_target_hit(self, target_id: str, target_status: str, new_stop_loss: float):
-        all_signals = await self.get_all_signals()
+        all_signals = await self.get_all_signals(include_before_reset=True)
         current = next((x for x in all_signals if x["id"] == target_id and x["status"] == "OPEN"), None)
         if not current:
             return None
@@ -186,7 +219,7 @@ class TradeTracker:
         return dict(row) if row else None
 
     async def update_signal(self, target_id: str, new_status: str):
-        all_signals = await self.get_all_signals()
+        all_signals = await self.get_all_signals(include_before_reset=True)
         current = next((x for x in all_signals if x["id"] == target_id and x["status"] == "OPEN"), None)
         if not current:
             return None
@@ -211,6 +244,7 @@ class TradeTracker:
         current["closed_at"] = datetime.utcnow()
         current["realized_r"] = realized_r
         current["notified"] = False
+        await self.record_equity_snapshot("signals", {"last_signal_id": target_id, "status": new_status})
         return current
 
     async def mark_notified(self, target_id: str):
@@ -257,6 +291,103 @@ class TradeTracker:
         analyzer = StatsAnalyzer(await self.get_all_signals())
         return analyzer.grouped_by_week()
 
+    async def get_equity_curve(self) -> list[dict]:
+        analyzer = StatsAnalyzer(await self.get_all_signals())
+        return analyzer.equity_curve()
+
+    async def record_equity_snapshot(self, source: str, payload: dict | None = None):
+        payload = payload or {}
+        stats = await self.get_stats()
+
+        assert db.pool is not None
+        async with db.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO equity_history (source, equity_r, payload, snapshot_at)
+                VALUES ($1, $2, $3::jsonb, NOW())
+                """,
+                source,
+                float(stats.get("total_r") or 0.0),
+                json.dumps(payload),
+            )
+
+    async def refresh_symbol_whitelist(self) -> list[dict]:
+        rows = await self.get_best_pairs(
+            min_closed=Config.AUTO_WHITELIST_MIN_CLOSED_TRADES,
+            limit=Config.AUTO_WHITELIST_SIZE,
+        )
+        rows = [
+            item
+            for item in rows
+            if float(item.get("expectancy") or 0.0) >= Config.AUTO_WHITELIST_MIN_EXPECTANCY
+        ]
+
+        assert db.pool is not None
+        async with db.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("TRUNCATE symbol_whitelist;")
+
+                for item in rows:
+                    await conn.execute(
+                        """
+                        INSERT INTO symbol_whitelist (
+                            symbol, expectancy, winrate, total_r,
+                            closed_count, refreshed_at
+                        )
+                        VALUES ($1,$2,$3,$4,$5,NOW())
+                        ON CONFLICT (symbol)
+                        DO UPDATE SET
+                            expectancy=EXCLUDED.expectancy,
+                            winrate=EXCLUDED.winrate,
+                            total_r=EXCLUDED.total_r,
+                            closed_count=EXCLUDED.closed_count,
+                            refreshed_at=NOW()
+                        """,
+                        item["symbol"],
+                        float(item.get("expectancy") or 0.0),
+                        float(item.get("winrate") or 0.0),
+                        float(item.get("total_r") or 0.0),
+                        int(item.get("closed") or 0),
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO symbol_stats_snapshots (symbol, payload, snapshot_at)
+                        VALUES ($1, $2::jsonb, NOW())
+                        """,
+                        item["symbol"],
+                        json.dumps(item),
+                    )
+
+        return rows
+
+    async def get_symbol_whitelist(self) -> list[dict]:
+        assert db.pool is not None
+        async with db.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM symbol_whitelist
+                ORDER BY expectancy DESC, winrate DESC, closed_count DESC
+                """
+            )
+        return [dict(row) for row in rows]
+
+    async def whitelist_is_stale(self) -> bool:
+        assert db.pool is not None
+        async with db.pool.acquire() as conn:
+            refreshed_at = await conn.fetchval("SELECT MAX(refreshed_at) FROM symbol_whitelist")
+
+        if not refreshed_at:
+            return True
+
+        return refreshed_at <= datetime.utcnow() - timedelta(hours=Config.AUTO_WHITELIST_REFRESH_HOURS)
+
+    async def reset_stats(self):
+        await db.reset_stats()
+
+    async def reset_db(self):
+        await db.reset_db()
+
     async def get_json_path(self) -> str:
         return "tracked_signals.json"
 
@@ -301,5 +432,34 @@ class TradeTracker:
                     s["created_at"],
                     s["closed_at"],
                 ])
+
+        return str(path)
+
+    async def export_excel(self) -> str:
+        signals = await self.get_all_signals()
+        stats = await self.get_stats()
+        pair_stats = await self.get_pair_stats()
+        side_stats = await self.get_side_stats()
+        equity_curve = await self.get_equity_curve()
+
+        path = Path("/tmp/trades_export.xlsx")
+
+        df_signals = pd.DataFrame(signals)
+        df_symbols = pd.DataFrame(pair_stats)
+        df_equity = pd.DataFrame(equity_curve)
+        df_overall = pd.DataFrame([stats])
+        df_sides = pd.DataFrame(
+            [
+                {"side": side, **values}
+                for side, values in side_stats.items()
+            ]
+        )
+
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            df_overall.to_excel(writer, index=False, sheet_name="Overall")
+            df_sides.to_excel(writer, index=False, sheet_name="LongShort")
+            df_symbols.to_excel(writer, index=False, sheet_name="Symbols")
+            df_equity.to_excel(writer, index=False, sheet_name="Equity")
+            df_signals.to_excel(writer, index=False, sheet_name="Signals")
 
         return str(path)

@@ -149,18 +149,26 @@ class SignalEngine:
         regime_diag = {
             "htf_regime": htf_regime.regime,
             "htf_regime_dir": htf_regime.direction,
+            "htf_regime_reason": htf_regime.reason,
             "mtf_regime": mtf_regime.regime,
             "mtf_regime_dir": mtf_regime.direction,
+            "mtf_regime_reason": mtf_regime.reason,
             "ltf_regime": ltf_regime.regime,
             "ltf_regime_dir": ltf_regime.direction,
+            "ltf_regime_reason": ltf_regime.reason,
         }
 
+        if htf_regime.is_volatility_compression:
+            return False, "market regime: 4h сжатие волатильности, нет follow-through", regime_diag
+
         # 4H range — жёсткий запрет
-        if htf_regime.is_ranging:
+        if htf_regime.is_ranging and not htf_regime.is_volatility_expansion:
             return False, "market regime: 4h боковик", regime_diag
 
         # 1H range допустим только если 4H трендовый.
         # Поэтому тут НЕ режем просто по mtf_regime.is_ranging.
+        if mtf_regime.is_volatility_compression and ltf_regime.is_volatility_compression:
+            return False, "market regime: 1h/15m сжатие волатильности", regime_diag
 
         if htf_regime.is_overextended:
             return False, "market regime: 4h рынок перерастянут", regime_diag
@@ -184,7 +192,7 @@ class SignalEngine:
         if mtf_regime.direction not in {wanted_dir, "NONE"}:
             return False, "market regime: 1h направление против сигнала", regime_diag
 
-        if not htf_regime.is_trending:
+        if not (htf_regime.is_trending or htf_regime.is_volatility_expansion):
             return False, "market regime: 4h не подтверждает тренд", regime_diag
 
         return True, "", regime_diag
@@ -483,7 +491,120 @@ class SignalEngine:
     # LEVELS
     # =========================================================
 
-    def build_trade_levels(self, direction: str, ltf_df: pd.DataFrame):
+    def _safe_float(self, value, default: float = 0.0) -> float:
+        try:
+            if pd.isna(value):
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    def _clamp(self, value: float, min_value: float, max_value: float) -> float:
+        return max(min_value, min(value, max_value))
+
+    def _dedupe_levels(self, levels: list[float], tolerance: float) -> list[float]:
+        clean = []
+
+        for level in sorted(levels):
+            if level <= 0:
+                continue
+
+            if clean and abs(level - clean[-1]) <= tolerance:
+                continue
+
+            clean.append(level)
+
+        return clean
+
+    def _symbol_profile(self, symbol: str, last: pd.Series) -> dict:
+        quote_volume_avg = self._safe_float(last.get("quote_volume_avg_20"))
+        atr_ratio_value = self._safe_float(last.get("atr_ratio"))
+        symbol = symbol.upper()
+
+        majors = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"}
+
+        if symbol in majors or quote_volume_avg >= 50_000_000:
+            max_stop_atr = Config.MAX_STOP_ATR_MAJOR
+            max_stop_pct = Config.MAX_STOP_PCT_MAJOR
+            buffer_atr = 0.16
+            liquidity = "HIGH"
+        elif quote_volume_avg and quote_volume_avg < 2_500_000:
+            max_stop_atr = Config.MAX_STOP_ATR_LOW_LIQUIDITY
+            max_stop_pct = Config.MAX_STOP_PCT_LOW_LIQUIDITY
+            buffer_atr = 0.26
+            liquidity = "LOW"
+        else:
+            max_stop_atr = Config.MAX_STOP_ATR_DEFAULT
+            max_stop_pct = Config.MAX_STOP_PCT_DEFAULT
+            buffer_atr = 0.20
+            liquidity = "NORMAL"
+
+        if atr_ratio_value >= 0.008:
+            max_stop_atr += 0.12
+            buffer_atr += 0.04
+        elif 0 < atr_ratio_value <= 0.0035:
+            max_stop_atr -= 0.08
+            buffer_atr -= 0.03
+
+        return {
+            "liquidity": liquidity,
+            "max_stop_atr": max(0.85, max_stop_atr),
+            "max_stop_pct": max_stop_pct,
+            "buffer_atr": self._clamp(buffer_atr, 0.12, 0.32),
+        }
+
+    def _recent_structure_levels(self, ltf_df: pd.DataFrame, entry_ref: float, atr: float) -> dict:
+        window = ltf_df.iloc[-62:-2].copy()
+        tolerance = max(atr * 0.25, entry_ref * 0.001)
+
+        supports = []
+        resistances = []
+
+        if len(window) >= 5:
+            lows = [float(x) for x in window["low"].dropna().tolist()]
+            highs = [float(x) for x in window["high"].dropna().tolist()]
+
+            supports.extend([x for x in lows if x < entry_ref])
+            resistances.extend([x for x in highs if x > entry_ref])
+
+            rolling_low = window["low"].rolling(window=5).min().dropna()
+            rolling_high = window["high"].rolling(window=5).max().dropna()
+
+            supports.extend([float(x) for x in rolling_low.tolist() if float(x) < entry_ref])
+            resistances.extend([float(x) for x in rolling_high.tolist() if float(x) > entry_ref])
+
+        return {
+            "supports": self._dedupe_levels(supports, tolerance),
+            "resistances": self._dedupe_levels(resistances, tolerance),
+        }
+
+    def _pick_take_profit_level(
+        self,
+        direction: str,
+        entry_ref: float,
+        risk: float,
+        levels: list[float],
+        min_rr: float,
+        fallback_rr: float,
+    ) -> float:
+        if direction == "LONG":
+            for level in levels:
+                rr = (level - entry_ref) / risk
+                if rr < min_rr:
+                    continue
+                if rr <= fallback_rr + 0.35:
+                    return level
+            return entry_ref + risk * fallback_rr
+
+        for level in sorted(levels, reverse=True):
+            rr = (entry_ref - level) / risk
+            if rr < min_rr:
+                continue
+            if rr <= fallback_rr + 0.35:
+                return level
+        return entry_ref - risk * fallback_rr
+
+    def build_trade_levels(self, symbol: str, direction: str, ltf_df: pd.DataFrame):
         last = self._closed(ltf_df)
         atr = float(last["atr"])
         close = float(last["close"])
@@ -495,18 +616,33 @@ class SignalEngine:
         if pd.isna(atr) or atr <= 0:
             return None
 
-        stop_buffer = atr * Config.MIN_STOP_BUFFER_ATR
+        profile = self._symbol_profile(symbol, last)
+        stop_buffer = atr * profile["buffer_atr"]
 
         if direction == "LONG":
             anchor = min(close, ema20, ema50)
             entry_min = anchor * 0.999
             entry_max = close * 1.001
+            entry_ref = entry_max
 
-            stop_candidates = [close - atr * 1.2]
+            structure = self._recent_structure_levels(ltf_df, entry_ref, atr)
+            stop_candidates = [close - atr * profile["max_stop_atr"], ema50 - stop_buffer]
             if pd.notna(support):
-                stop_candidates.append(float(support) - atr * 0.15)
+                stop_candidates.append(float(support) - stop_buffer)
 
-            stop_loss = min(stop_candidates)
+            if structure["supports"]:
+                stop_candidates.append(max(structure["supports"]) - stop_buffer)
+
+            stop_candidates = [x for x in stop_candidates if x < entry_min]
+            if not stop_candidates:
+                stop_candidates = [entry_min - stop_buffer]
+
+            stop_loss = max(stop_candidates)
+            max_stop_distance = min(
+                atr * profile["max_stop_atr"],
+                entry_ref * profile["max_stop_pct"],
+            )
+            stop_loss = max(stop_loss, entry_ref - max_stop_distance)
             stop_loss = min(stop_loss, entry_min - stop_buffer)
 
             if stop_loss >= entry_min:
@@ -516,27 +652,65 @@ class SignalEngine:
             if risk <= 0:
                 return None
 
-            tp1 = entry_max + risk * 1.2
-            tp2 = entry_max + risk * 1.8
-            tp3 = entry_max + risk * 2.5
+            trend_strength = self._clamp((self._safe_float(last.get("adx")) - 14) / 26, 0.0, 1.0)
+            tp1_rr = self._clamp(1.05 + trend_strength * 0.25, Config.TP1_MIN_RR, Config.TP1_MAX_RR)
+            tp2_rr = self._clamp(tp1_rr + 0.48 + trend_strength * 0.18, 1.48, 1.95)
+            tp3_rr = self._clamp(tp2_rr + 0.55 + trend_strength * 0.18, 2.05, Config.TP3_MAX_RR)
 
-            rr = (tp1 - entry_max) / risk
+            resistance_levels = structure["resistances"]
 
             if pd.notna(resistance):
                 resistance_val = float(resistance)
                 if resistance_val <= entry_max:
                     return None
+                resistance_levels.append(resistance_val)
+
+            resistance_levels = self._dedupe_levels(
+                [x for x in resistance_levels if x > entry_ref],
+                max(atr * 0.25, entry_ref * 0.001),
+            )
+
+            nearest_resistance_rr = None
+            if resistance_levels:
+                nearest_resistance_rr = (resistance_levels[0] - entry_ref) / risk
+                if nearest_resistance_rr < Config.TP1_MIN_RR:
+                    return None
+
+            tp1 = self._pick_take_profit_level("LONG", entry_ref, risk, resistance_levels, Config.TP1_MIN_RR, tp1_rr)
+            tp2 = self._pick_take_profit_level("LONG", entry_ref, risk, resistance_levels, tp1_rr + 0.25, tp2_rr)
+            tp3 = self._pick_take_profit_level("LONG", entry_ref, risk, resistance_levels, tp2_rr + 0.25, tp3_rr)
+
+            if not (tp1 < tp2 < tp3):
+                tp1 = entry_ref + risk * tp1_rr
+                tp2 = entry_ref + risk * tp2_rr
+                tp3 = entry_ref + risk * tp3_rr
+
+            rr = (tp1 - entry_ref) / risk
 
         else:
             anchor = max(close, ema20, ema50)
             entry_min = close * 0.999
             entry_max = anchor * 1.001
+            entry_ref = entry_min
 
-            stop_candidates = [close + atr * 1.2]
+            structure = self._recent_structure_levels(ltf_df, entry_ref, atr)
+            stop_candidates = [close + atr * profile["max_stop_atr"], ema50 + stop_buffer]
             if pd.notna(resistance):
-                stop_candidates.append(float(resistance) + atr * 0.15)
+                stop_candidates.append(float(resistance) + stop_buffer)
 
-            stop_loss = max(stop_candidates)
+            if structure["resistances"]:
+                stop_candidates.append(min(structure["resistances"]) + stop_buffer)
+
+            stop_candidates = [x for x in stop_candidates if x > entry_max]
+            if not stop_candidates:
+                stop_candidates = [entry_max + stop_buffer]
+
+            stop_loss = min(stop_candidates)
+            max_stop_distance = min(
+                atr * profile["max_stop_atr"],
+                entry_ref * profile["max_stop_pct"],
+            )
+            stop_loss = min(stop_loss, entry_ref + max_stop_distance)
             stop_loss = max(stop_loss, entry_max + stop_buffer)
 
             if stop_loss <= entry_max:
@@ -546,18 +720,41 @@ class SignalEngine:
             if risk <= 0:
                 return None
 
-            tp1 = entry_min - risk * 1.2
-            tp2 = entry_min - risk * 1.8
-            tp3 = entry_min - risk * 2.5
+            trend_strength = self._clamp((self._safe_float(last.get("adx")) - 14) / 26, 0.0, 1.0)
+            tp1_rr = self._clamp(1.05 + trend_strength * 0.25, Config.TP1_MIN_RR, Config.TP1_MAX_RR)
+            tp2_rr = self._clamp(tp1_rr + 0.48 + trend_strength * 0.18, 1.48, 1.95)
+            tp3_rr = self._clamp(tp2_rr + 0.55 + trend_strength * 0.18, 2.05, Config.TP3_MAX_RR)
 
-            rr = (entry_min - tp1) / risk
+            support_levels = structure["supports"]
 
             if pd.notna(support):
                 support_val = float(support)
                 if support_val >= entry_min:
                     return None
+                support_levels.append(support_val)
 
-        entry_ref = entry_max if direction == "LONG" else entry_min
+            support_levels = self._dedupe_levels(
+                [x for x in support_levels if x < entry_ref],
+                max(atr * 0.25, entry_ref * 0.001),
+            )
+
+            nearest_support_rr = None
+            if support_levels:
+                nearest_support_rr = (entry_ref - support_levels[-1]) / risk
+                if nearest_support_rr < Config.TP1_MIN_RR:
+                    return None
+
+            tp1 = self._pick_take_profit_level("SHORT", entry_ref, risk, support_levels, Config.TP1_MIN_RR, tp1_rr)
+            tp2 = self._pick_take_profit_level("SHORT", entry_ref, risk, support_levels, tp1_rr + 0.25, tp2_rr)
+            tp3 = self._pick_take_profit_level("SHORT", entry_ref, risk, support_levels, tp2_rr + 0.25, tp3_rr)
+
+            if not (tp1 > tp2 > tp3):
+                tp1 = entry_ref - risk * tp1_rr
+                tp2 = entry_ref - risk * tp2_rr
+                tp3 = entry_ref - risk * tp3_rr
+
+            rr = (entry_ref - tp1) / risk
+
         if entry_ref <= 0:
             return None
 
@@ -583,6 +780,8 @@ class SignalEngine:
             "tp2": tp2,
             "tp3": tp3,
             "rr": rr,
+            "liquidity_profile": profile["liquidity"],
+            "risk_pct": risk_pct,
         }
 
     # =========================================================
@@ -674,7 +873,7 @@ class SignalEngine:
         )
         reasons.insert(0, setup.reason)
 
-        levels = self.build_trade_levels(setup.direction, ltf_df)
+        levels = self.build_trade_levels(symbol, setup.direction, ltf_df)
         if not levels:
             return SignalCheckResult(
                 symbol=symbol,
@@ -686,6 +885,8 @@ class SignalEngine:
         diagnostics["rr"] = round(float(levels["rr"]), 3)
         diagnostics["score"] = round(float(score), 3)
         diagnostics["setup_type"] = setup.setup_type
+        diagnostics["liquidity_profile"] = levels.get("liquidity_profile")
+        diagnostics["risk_pct"] = round(float(levels.get("risk_pct", 0.0)), 5)
 
         signal_type = self.classify_signal(score, levels["rr"])
         if not signal_type:

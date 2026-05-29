@@ -26,6 +26,21 @@ class VirtualTrade:
 
 
 class PaperTrader:
+    def _target_r(self, trade: dict, price: float) -> float:
+        entry_price = float(trade["entry_price"])
+        stop_loss = float(trade["stop_loss"])
+
+        if trade["direction"] == "LONG":
+            risk = entry_price - stop_loss
+            if risk <= 0:
+                return 0.0
+            return (float(price) - entry_price) / risk
+
+        risk = stop_loss - entry_price
+        if risk <= 0:
+            return 0.0
+        return (entry_price - float(price)) / risk
+
     async def get_state(self) -> dict:
         assert db.pool is not None
         async with db.pool.acquire() as conn:
@@ -126,28 +141,29 @@ class PaperTrader:
                         result_r = -1.0
                     elif high >= trade["tp3"]:
                         close_reason = "TP3_HIT"
-                        result_r = 3.0
+                        result_r = self._target_r(trade, trade["tp3"])
                     elif high >= trade["tp2"]:
                         close_reason = "TP2_HIT"
-                        result_r = 2.3
+                        result_r = self._target_r(trade, trade["tp2"])
                     elif high >= trade["tp1"]:
                         close_reason = "TP1_HIT"
-                        result_r = 1.6
+                        result_r = self._target_r(trade, trade["tp1"])
                 else:
                     if high >= trade["stop_loss"]:
                         close_reason = "STOP_HIT"
                         result_r = -1.0
                     elif low <= trade["tp3"]:
                         close_reason = "TP3_HIT"
-                        result_r = 3.0
+                        result_r = self._target_r(trade, trade["tp3"])
                     elif low <= trade["tp2"]:
                         close_reason = "TP2_HIT"
-                        result_r = 2.3
+                        result_r = self._target_r(trade, trade["tp2"])
                     elif low <= trade["tp1"]:
                         close_reason = "TP1_HIT"
-                        result_r = 1.6
+                        result_r = self._target_r(trade, trade["tp1"])
 
                 if close_reason:
+                    result_r = round(result_r, 4)
                     result_usdt = round(float(trade["risk_amount"]) * result_r, 2)
                     balance = round(balance + result_usdt, 2)
 
@@ -206,15 +222,54 @@ class PaperTrader:
             wins = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt > 0")
             losses = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt < 0")
             total_r = await conn.fetchval("SELECT COALESCE(SUM(result_r), 0) FROM paper_trades WHERE status='CLOSED'")
+            closed_rows = await conn.fetch(
+                """
+                SELECT result_usdt, result_r
+                FROM paper_trades
+                WHERE status='CLOSED'
+                ORDER BY closed_at ASC NULLS LAST, id ASC
+                """
+            )
+            open_risk = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(risk_amount), 0)
+                FROM paper_trades
+                WHERE status='OPEN'
+                """
+            )
+            open_volume = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(size * entry_price), 0)
+                FROM paper_trades
+                WHERE status='OPEN'
+                """
+            )
 
         start_balance = float(state["start_balance"])
         balance = float(state["balance"])
+        risk_per_trade = float(state["risk_per_trade"])
         pnl = round(balance - start_balance, 2)
         winrate = round((wins / closed) * 100, 2) if closed > 0 else 0.0
+        result_r_values = [float(row["result_r"] or 0.0) for row in closed_rows]
+        win_r_values = [x for x in result_r_values if x > 0]
+        loss_r_values = [x for x in result_r_values if x < 0]
+        gross_profit = sum(win_r_values)
+        gross_loss = abs(sum(loss_r_values))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else ("∞" if gross_profit > 0 else 0.0)
+
+        equity = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+
+        for result_r in result_r_values:
+            equity += result_r
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, peak - equity)
 
         return {
             "start_balance": round(start_balance, 2),
             "balance": round(balance, 2),
+            "risk_per_trade": risk_per_trade,
             "pnl_usdt": pnl,
             "total_r": round(float(total_r), 2),
             "total_trades": int(total),
@@ -223,6 +278,13 @@ class PaperTrader:
             "wins": int(wins),
             "losses": int(losses),
             "winrate": winrate,
+            "profit_factor": round(profit_factor, 2) if isinstance(profit_factor, float) else profit_factor,
+            "expectancy": round(sum(result_r_values) / int(closed), 4) if int(closed) > 0 else 0.0,
+            "avg_win": round(sum(win_r_values) / len(win_r_values), 4) if win_r_values else 0.0,
+            "avg_loss": round(sum(loss_r_values) / len(loss_r_values), 4) if loss_r_values else 0.0,
+            "max_drawdown": round(max_drawdown, 4),
+            "open_risk_usdt": round(float(open_risk or 0.0), 2),
+            "open_volume_usdt": round(float(open_volume or 0.0), 2),
         }
 
     async def get_open_trades(self) -> list[dict]:

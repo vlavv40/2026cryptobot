@@ -168,6 +168,12 @@ class MarketScanner:
     async def get_best_pairs(self, min_closed: int = 1, limit: int = 5) -> list[dict]:
         return await self.trade_tracker.get_best_pairs(min_closed=min_closed, limit=limit)
 
+    async def get_symbol_whitelist(self) -> list[dict]:
+        return await self.trade_tracker.get_symbol_whitelist()
+
+    async def refresh_symbol_whitelist(self) -> list[dict]:
+        return await self.trade_tracker.refresh_symbol_whitelist()
+
     async def get_side_stats(self) -> dict:
         return await self.trade_tracker.get_side_stats()
 
@@ -185,6 +191,12 @@ class MarketScanner:
 
     async def get_paper_history(self, limit: int = 10) -> list[dict]:
         return await self.paper.get_last_closed(limit)
+
+    async def get_open_orders(self) -> list[dict]:
+        if not self.execution.enabled():
+            return []
+
+        return await self.execution.get_open_orders()
 
     async def get_heartbeat(self) -> dict:
         return {
@@ -489,10 +501,13 @@ class MarketScanner:
             ("ATRr15m", "ltf_atr_ratio"),
             ("Vol15m", "ltf_quote_volume_ratio"),
             ("RR", "rr"),
+            ("Risk", "risk_pct"),
             ("ResGap", "resistance_gap"),
             ("SupGap", "support_gap"),
             ("BTC", "btc_bias"),
             ("Setup", "setup_type"),
+            ("HTF", "htf_regime"),
+            ("Liq", "liquidity_profile"),
         ]:
             value = diagnostics.get(key)
             if value is not None:
@@ -500,7 +515,7 @@ class MarketScanner:
 
         return " | " + ", ".join(parts) if parts else ""
 
-    async def _load_symbols_for_scan(self) -> list[str]:
+    async def _load_liquid_symbols(self) -> list[str]:
         try:
             symbols = await self.client.get_liquid_symbols()
             if symbols:
@@ -512,6 +527,38 @@ class MarketScanner:
         logger.info("Использую резервный список пар из config.py")
         return Config.DEFAULT_SYMBOLS
 
+    async def _load_symbols_for_scan(self) -> list[str]:
+        liquid_symbols = await self._load_liquid_symbols()
+
+        if not Config.AUTO_WHITELIST_ENABLED:
+            return liquid_symbols
+
+        try:
+            if await self.trade_tracker.whitelist_is_stale():
+                refreshed = await self.trade_tracker.refresh_symbol_whitelist()
+                logger.info(f"[WHITELIST] Переоценка завершена, символов={len(refreshed)}")
+
+            whitelist = await self.trade_tracker.get_symbol_whitelist()
+            whitelist_symbols = [item["symbol"] for item in whitelist]
+
+            if not whitelist_symbols:
+                logger.info("[WHITELIST] Недостаточно статистики, сканирую ликвидные пары")
+                return liquid_symbols
+
+            allowed = set(whitelist_symbols)
+            filtered = [symbol for symbol in liquid_symbols if symbol in allowed]
+
+            if not filtered:
+                logger.warning("[WHITELIST] Топ-символы не прошли фильтр ликвидности, использую сохраненный whitelist")
+                return whitelist_symbols[: Config.AUTO_WHITELIST_SIZE]
+
+            logger.info(f"[WHITELIST] Сканирую {len(filtered)} пар из авто-whitelist")
+            return filtered[: Config.AUTO_WHITELIST_SIZE]
+
+        except Exception as error:
+            logger.exception(f"[WHITELIST ERROR] {error}")
+            return liquid_symbols
+
     async def _log_paper_stats(self):
         stats = await self.paper.stats()
         logger.info(
@@ -522,6 +569,56 @@ class MarketScanner:
             f"wins={stats['wins']} | losses={stats['losses']} | "
             f"winrate={stats['winrate']}%"
         )
+
+    async def _portfolio_allows_new_signal(self, signal: Signal) -> tuple[bool, str]:
+        stats = await self.paper.stats()
+        balance = float(stats.get("balance") or 0.0)
+        open_trades = int(stats.get("open_trades") or 0)
+        open_risk = float(stats.get("open_risk_usdt") or 0.0)
+        open_volume = float(stats.get("open_volume_usdt") or 0.0)
+        next_risk = balance * float(stats.get("risk_per_trade") or 0.0)
+
+        max_risk = balance * Config.MAX_TOTAL_OPEN_RISK_PCT
+        max_volume = balance * Config.MAX_OPEN_VOLUME_TO_BALANCE
+
+        if open_trades >= Config.MAX_OPEN_TRADES:
+            return False, f"portfolio: максимум открытых сделок ({open_trades}/{Config.MAX_OPEN_TRADES})"
+
+        if balance > 0 and open_risk + next_risk > max_risk:
+            return False, f"portfolio: лимит открытого риска ({open_risk + next_risk:.2f}$/{max_risk:.2f}$)"
+
+        if balance > 0 and open_volume >= max_volume:
+            return False, f"portfolio: перегрузка объёма ({open_volume:.2f}$/{max_volume:.2f}$)"
+
+        return True, ""
+
+    async def _side_allows_signal(self, signal: Signal) -> tuple[bool, str]:
+        if not Config.SIDE_QUALITY_FILTER_ENABLED:
+            return True, ""
+
+        side_stats = await self.get_side_stats()
+        stats = side_stats.get(signal.direction, {})
+        closed = int(stats.get("closed") or 0)
+
+        if closed < Config.SIDE_QUALITY_MIN_CLOSED_TRADES:
+            return True, ""
+
+        expectancy = float(stats.get("expectancy") or 0.0)
+        stop_rate = float(stats.get("stop_rate") or 0.0)
+
+        if expectancy <= Config.SIDE_QUALITY_MIN_EXPECTANCY:
+            return (
+                False,
+                f"side quality: {signal.direction} expectancy {expectancy:.2f}R хуже лимита",
+            )
+
+        if stop_rate >= Config.SIDE_QUALITY_MAX_STOP_RATE and expectancy <= 0:
+            return (
+                False,
+                f"side quality: {signal.direction} stop-rate {stop_rate:.1f}% слишком высокий",
+            )
+
+        return True, ""
 
     async def _update_paper_trades_from_symbol(self, symbol: str):
         try:
@@ -677,9 +774,22 @@ class MarketScanner:
                 final_signals.append(signal)
 
             top_signals = final_signals[: Config.MAX_SIGNALS_PER_SCAN]
+            sent_signal_symbols = []
 
             for signal in top_signals:
                 try:
+                    side_ok, side_reason = await self._side_allows_signal(signal)
+                    if not side_ok:
+                        logger.info(f"[SIDE QUALITY SKIP] {signal.symbol} {signal.direction} | {side_reason}")
+                        skip_counter[side_reason] += 1
+                        continue
+
+                    portfolio_ok, portfolio_reason = await self._portfolio_allows_new_signal(signal)
+                    if not portfolio_ok:
+                        logger.info(f"[PORTFOLIO SKIP] {signal.symbol} | {portfolio_reason}")
+                        skip_counter[portfolio_reason] += 1
+                        continue
+
                     execution_report = None
 
                     if send_to_telegram:
@@ -707,6 +817,7 @@ class MarketScanner:
                         )
 
                     logger.info(f"Сигнал отправлен: {signal.symbol}")
+                    sent_signal_symbols.append(signal.symbol)
                 except Exception as error:
                     logger.exception(f"Ошибка отправки сигнала {signal.symbol}: {error}")
 
@@ -714,16 +825,16 @@ class MarketScanner:
                 "started_at": cycle_started_at,
                 "finished_at": datetime.utcnow().isoformat(),
                 "symbols_checked": len(symbols),
-                "signals_found": len(top_signals),
+                "signals_found": len(sent_signal_symbols),
                 "news_block": False,
                 "news_reason": news_decision.reason,
                 "sentiment": news_decision.sentiment_bias,
                 "btc_bias": btc_bias,
                 "skip_summary": dict(skip_counter),
-                "top_signal_symbols": [s.symbol for s in top_signals],
+                "top_signal_symbols": sent_signal_symbols,
             }
 
-            if not top_signals:
+            if not sent_signal_symbols:
                 logger.info("Сильных новых сигналов не найдено.")
 
             await self._log_paper_stats()

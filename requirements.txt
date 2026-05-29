@@ -5,3 +5,4 @@ pandas==2.2.2
 numpy==2.1.1
 asyncpg==0.29.0
 aiohttp_socks
+openpyxl==3.1.5

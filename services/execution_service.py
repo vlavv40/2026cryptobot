@@ -218,6 +218,32 @@ class ExecutionService:
         qty = await self.get_position_qty(symbol)
         return qty > 0
 
+    async def get_open_orders(self, symbol: str | None = None) -> list[dict]:
+        params = {}
+        if symbol:
+            params["symbol"] = symbol
+
+        regular_orders = await self._request(
+            "GET",
+            "/fapi/v1/openOrders",
+            params,
+        )
+
+        orders = regular_orders if isinstance(regular_orders, list) else []
+
+        try:
+            algo_orders = await self._request(
+                "GET",
+                "/fapi/v1/algoOpenOrders",
+                params.copy(),
+            )
+            if isinstance(algo_orders, list):
+                orders.extend(algo_orders)
+        except Exception as error:
+            logger.warning(f"[AUTO TRADE] Не удалось получить algo orders: {error}")
+
+        return orders
+
     async def set_margin_and_leverage(self, symbol: str):
 
         try:

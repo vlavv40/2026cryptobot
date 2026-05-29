@@ -7,7 +7,7 @@ from services.market_structure import MarketStructureAnalyzer
 
 @dataclass
 class MarketRegimeReport:
-    regime: str  # TREND / RANGE / IMPULSE / OVEREXTENDED / REVERSAL_RISK
+    regime: str  # TREND_BULL / TREND_BEAR / RANGE / VOLATILITY_EXPANSION / VOLATILITY_COMPRESSION
     direction: str  # LONG / SHORT / NONE
     is_trending: bool
     is_ranging: bool
@@ -16,6 +16,8 @@ class MarketRegimeReport:
     reversal_risk: bool
     reason: str
     score: float
+    is_volatility_expansion: bool = False
+    is_volatility_compression: bool = False
 
 
 class MarketRegimeAnalyzer:
@@ -84,6 +86,8 @@ class MarketRegimeAnalyzer:
         is_impulsive = False
         is_overextended = False
         reversal_risk = False
+        is_volatility_expansion = False
+        is_volatility_compression = False
 
         regime = "RANGE"
         direction = "NONE"
@@ -98,7 +102,7 @@ class MarketRegimeAnalyzer:
         ):
             is_trending = True
             direction = "LONG"
-            regime = "TREND"
+            regime = "TREND_BULL"
             score += 2.0
             reason = "восходящий тренд: структура + EMA alignment + ADX"
 
@@ -109,7 +113,7 @@ class MarketRegimeAnalyzer:
         ):
             is_trending = True
             direction = "SHORT"
-            regime = "TREND"
+            regime = "TREND_BEAR"
             score += 2.0
             reason = "нисходящий тренд: структура + EMA alignment + ADX"
 
@@ -129,21 +133,36 @@ class MarketRegimeAnalyzer:
         fast_move_down = close_price < prev_close and rsi <= 47
 
         if strong_body and strong_atr and strong_volume:
+            is_volatility_expansion = True
+
             if fast_move_up and direction in ["LONG", "NONE"]:
                 is_impulsive = True
-                regime = "IMPULSE"
+                regime = "VOLATILITY_EXPANSION"
                 direction = "LONG"
                 score = max(score, 3.0)
                 reason = "сильный бычий импульс: тело свечи + ATR expansion + объём"
 
             elif fast_move_down and direction in ["SHORT", "NONE"]:
                 is_impulsive = True
-                regime = "IMPULSE"
+                regime = "VOLATILITY_EXPANSION"
                 direction = "SHORT"
                 score = max(score, 3.0)
                 reason = "сильный медвежий импульс: тело свечи + ATR expansion + объём"
 
-        # 4. Overextended detection — чуть мягче к рынку
+        # 4. Volatility compression — рынок сжимается, входы часто хуже по follow-through
+        quiet_body = body_vs_atr <= 0.28
+        weak_atr = 0 < atr_ratio <= 0.0028
+        weak_volume = volume_ratio <= 0.85
+
+        if not is_trending and (weak_atr or (quiet_body and weak_volume and adx < 15)):
+            is_volatility_compression = True
+            is_ranging = True
+            regime = "VOLATILITY_COMPRESSION"
+            direction = "NONE"
+            score = max(score, 1.2)
+            reason = "сжатие волатильности: слабый ATR/объём, мало follow-through"
+
+        # 5. Overextended detection — чуть мягче к рынку
         too_far_from_mean = distance_from_ema20 >= 0.016 or distance_from_ema50 >= 0.026
 
         if direction == "LONG":
@@ -160,7 +179,7 @@ class MarketRegimeAnalyzer:
                 score = max(score, 3.2)
                 reason = "рынок перегрет вниз: RSI низкий и цена далеко от EMA"
 
-        # 5. Reversal risk — не так агрессивно
+        # 6. Reversal risk — не так агрессивно
         if structure_report.choch == "BEARISH" and (rsi >= 62 or close_price < ema20):
             reversal_risk = True
             regime = "REVERSAL_RISK"
@@ -185,4 +204,6 @@ class MarketRegimeAnalyzer:
             reversal_risk=reversal_risk,
             reason=reason,
             score=round(score, 2),
+            is_volatility_expansion=is_volatility_expansion,
+            is_volatility_compression=is_volatility_compression,
         )

@@ -9,6 +9,7 @@ class Config:
     # BASIC
     # =========================================================
     BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+    APP_VERSION = os.getenv("APP_VERSION", "2.0.0-pro")
 
     RAW_CHAT_IDS = os.getenv("CHAT_IDS", "")
     CHAT_IDS = [chat_id.strip() for chat_id in RAW_CHAT_IDS.split(",") if chat_id.strip()]
@@ -40,6 +41,18 @@ class Config:
 
     USE_PRIORITY_SYMBOLS_ONLY = os.getenv("USE_PRIORITY_SYMBOLS_ONLY", "false").lower() == "true"
     MAX_SYMBOLS_TO_SCAN = int(os.getenv("MAX_SYMBOLS_TO_SCAN", "100"))
+    AUTO_WHITELIST_ENABLED = os.getenv("AUTO_WHITELIST_ENABLED", "true").lower() == "true"
+    AUTO_WHITELIST_SIZE = int(os.getenv("AUTO_WHITELIST_SIZE", "20"))
+    AUTO_WHITELIST_MIN_CLOSED_TRADES = int(os.getenv("AUTO_WHITELIST_MIN_CLOSED_TRADES", "3"))
+    AUTO_WHITELIST_MIN_EXPECTANCY = float(os.getenv("AUTO_WHITELIST_MIN_EXPECTANCY", "0.0"))
+    AUTO_WHITELIST_REFRESH_HOURS = int(os.getenv("AUTO_WHITELIST_REFRESH_HOURS", "168"))
+    MAX_OPEN_TRADES = int(os.getenv("MAX_OPEN_TRADES", "5"))
+    MAX_TOTAL_OPEN_RISK_PCT = float(os.getenv("MAX_TOTAL_OPEN_RISK_PCT", "0.05"))
+    MAX_OPEN_VOLUME_TO_BALANCE = float(os.getenv("MAX_OPEN_VOLUME_TO_BALANCE", "3.0"))
+    SIDE_QUALITY_FILTER_ENABLED = os.getenv("SIDE_QUALITY_FILTER_ENABLED", "true").lower() == "true"
+    SIDE_QUALITY_MIN_CLOSED_TRADES = int(os.getenv("SIDE_QUALITY_MIN_CLOSED_TRADES", "8"))
+    SIDE_QUALITY_MIN_EXPECTANCY = float(os.getenv("SIDE_QUALITY_MIN_EXPECTANCY", "-0.10"))
+    SIDE_QUALITY_MAX_STOP_RATE = float(os.getenv("SIDE_QUALITY_MAX_STOP_RATE", "65"))
 
     PRIORITY_SYMBOLS = [
         "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
@@ -99,6 +112,15 @@ class Config:
     MAX_CHASE_DISTANCE_FROM_EMA50 = float(os.getenv("MAX_CHASE_DISTANCE_FROM_EMA50", "0.035"))
 
     MIN_STOP_BUFFER_ATR = float(os.getenv("MIN_STOP_BUFFER_ATR", "0.28"))
+    MAX_STOP_ATR_MAJOR = float(os.getenv("MAX_STOP_ATR_MAJOR", "1.05"))
+    MAX_STOP_ATR_DEFAULT = float(os.getenv("MAX_STOP_ATR_DEFAULT", "1.20"))
+    MAX_STOP_ATR_LOW_LIQUIDITY = float(os.getenv("MAX_STOP_ATR_LOW_LIQUIDITY", "1.35"))
+    MAX_STOP_PCT_MAJOR = float(os.getenv("MAX_STOP_PCT_MAJOR", "0.018"))
+    MAX_STOP_PCT_DEFAULT = float(os.getenv("MAX_STOP_PCT_DEFAULT", "0.030"))
+    MAX_STOP_PCT_LOW_LIQUIDITY = float(os.getenv("MAX_STOP_PCT_LOW_LIQUIDITY", "0.045"))
+    TP1_MIN_RR = float(os.getenv("TP1_MIN_RR", "1.03"))
+    TP1_MAX_RR = float(os.getenv("TP1_MAX_RR", "1.45"))
+    TP3_MAX_RR = float(os.getenv("TP3_MAX_RR", "2.45"))
 
     HARD_MIN_RESISTANCE_GAP = float(os.getenv("HARD_MIN_RESISTANCE_GAP", "0.0045"))
     HARD_MIN_SUPPORT_GAP = float(os.getenv("HARD_MIN_SUPPORT_GAP", "0.0045"))

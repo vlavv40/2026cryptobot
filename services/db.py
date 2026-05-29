@@ -123,5 +123,153 @@ class Database:
             );
             """)
 
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_parameters (
+                key TEXT PRIMARY KEY,
+                value JSONB NOT NULL,
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS symbol_whitelist (
+                symbol TEXT PRIMARY KEY,
+                expectancy DOUBLE PRECISION NOT NULL DEFAULT 0,
+                winrate DOUBLE PRECISION NOT NULL DEFAULT 0,
+                total_r DOUBLE PRECISION NOT NULL DEFAULT 0,
+                closed_count INTEGER NOT NULL DEFAULT 0,
+                refreshed_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            """)
+
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS equity_history (
+                id BIGSERIAL PRIMARY KEY,
+                source TEXT NOT NULL DEFAULT 'signals',
+                equity_r DOUBLE PRECISION NOT NULL DEFAULT 0,
+                balance DOUBLE PRECISION,
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                snapshot_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS symbol_stats_snapshots (
+                id BIGSERIAL PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                payload JSONB NOT NULL,
+                snapshot_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_users (
+                id BIGSERIAL PRIMARY KEY,
+                telegram_id TEXT UNIQUE,
+                status TEXT NOT NULL DEFAULT 'ACTIVE',
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_api_keys (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES app_users(id) ON DELETE CASCADE,
+                exchange TEXT NOT NULL DEFAULT 'BINANCE_FUTURES',
+                api_key TEXT,
+                api_secret TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_risk_settings (
+                user_id BIGINT PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
+                risk_per_trade DOUBLE PRECISION NOT NULL DEFAULT 0.01,
+                max_open_trades INTEGER NOT NULL DEFAULT 5,
+                max_total_risk DOUBLE PRECISION NOT NULL DEFAULT 0.05,
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_subscriptions (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES app_users(id) ON DELETE CASCADE,
+                plan TEXT NOT NULL DEFAULT 'DEFAULT',
+                status TEXT NOT NULL DEFAULT 'ACTIVE',
+                valid_until TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+    async def get_strategy_parameter(self, key: str):
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT value FROM strategy_parameters WHERE key=$1",
+                key,
+            )
+
+    async def set_strategy_parameter(self, key: str, value: str):
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO strategy_parameters (key, value, updated_at)
+                VALUES ($1, $2::jsonb, NOW())
+                ON CONFLICT (key)
+                DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()
+                """,
+                key,
+                value,
+            )
+
+    async def reset_stats(self):
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO strategy_parameters (key, value, updated_at)
+                    VALUES ('statistics_reset_at', to_jsonb(NOW()), NOW())
+                    ON CONFLICT (key)
+                    DO UPDATE SET value=to_jsonb(NOW()), updated_at=NOW()
+                    """
+                )
+                await conn.execute("TRUNCATE paper_trades RESTART IDENTITY;")
+                await conn.execute("TRUNCATE equity_history RESTART IDENTITY;")
+                await conn.execute("TRUNCATE symbol_whitelist;")
+                await conn.execute(
+                    """
+                    UPDATE paper_state
+                    SET start_balance=10000,
+                        balance=10000,
+                        risk_per_trade=0.01
+                    WHERE id=1
+                    """
+                )
+
+    async def reset_db(self):
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("TRUNCATE bot_state_cooldowns;")
+                await conn.execute("TRUNCATE bot_state_last_signals;")
+                await conn.execute("TRUNCATE signal_logs RESTART IDENTITY;")
+                await conn.execute("TRUNCATE tracked_signals;")
+                await conn.execute("TRUNCATE paper_trades RESTART IDENTITY;")
+                await conn.execute("TRUNCATE equity_history RESTART IDENTITY;")
+                await conn.execute("TRUNCATE symbol_stats_snapshots RESTART IDENTITY;")
+                await conn.execute("TRUNCATE symbol_whitelist;")
+                await conn.execute("TRUNCATE strategy_parameters;")
+                await conn.execute("""
+                INSERT INTO paper_state (id, start_balance, balance, risk_per_trade)
+                VALUES (1, 10000, 10000, 0.01)
+                ON CONFLICT (id)
+                DO UPDATE SET start_balance=10000, balance=10000, risk_per_trade=0.01;
+                """)
+
 
 db = Database()
