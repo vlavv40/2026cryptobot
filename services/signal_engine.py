@@ -385,6 +385,10 @@ class SignalEngine:
                 score += 1.2
                 reasons.append("сетап: breakout + retest вверх")
 
+            if setup_type == "MOMENTUM_CONTINUATION":
+                score += 1.0
+                reasons.append("сетап: trend/momentum continuation вверх")
+
             if htf_last["ema_fast"] > htf_last["ema_slow"]:
                 score += 0.8
                 reasons.append("EMA fast выше slow на 4h")
@@ -440,6 +444,10 @@ class SignalEngine:
             if setup_type == "BREAKOUT_RETEST":
                 score += 1.2
                 reasons.append("сетап: breakout + retest вниз")
+
+            if setup_type == "MOMENTUM_CONTINUATION":
+                score += 1.0
+                reasons.append("сетап: trend/momentum continuation вниз")
 
             if htf_last["ema_fast"] < htf_last["ema_slow"]:
                 score += 0.8

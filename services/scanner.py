@@ -712,12 +712,34 @@ class MarketScanner:
 
                         allow_btc, btc_reason = self.btc_filter.allow_trade(result.signal.direction, btc_bias)
                         if not allow_btc:
-                            result = SignalCheckResult(
-                                symbol=symbol,
-                                signal=None,
-                                skip_reason=btc_reason,
-                                diagnostics=result.signal.diagnostics,
-                            )
+                            if Config.BTC_HARD_FILTER_ENABLED:
+                                result = SignalCheckResult(
+                                    symbol=symbol,
+                                    signal=None,
+                                    skip_reason=btc_reason,
+                                    diagnostics=result.signal.diagnostics,
+                                )
+                            else:
+                                result.signal.score = round(
+                                    result.signal.score - Config.BTC_COUNTER_TREND_PENALTY,
+                                    1,
+                                )
+                                result.signal.reasons.append(
+                                    f"BTC filter: counter-trend penalty -{Config.BTC_COUNTER_TREND_PENALTY}"
+                                )
+                                signal_type = self.engine.classify_signal(
+                                    result.signal.score,
+                                    float(result.signal.diagnostics.get("rr") or 0.0),
+                                )
+                                if not signal_type:
+                                    result = SignalCheckResult(
+                                        symbol=symbol,
+                                        signal=None,
+                                        skip_reason=f"{btc_reason}, после штрафа сигнал слабый",
+                                        diagnostics=result.signal.diagnostics,
+                                    )
+                                else:
+                                    result.signal.signal_type = signal_type
 
                     if result.signal:
                         if news_decision.sentiment_bias == "BEARISH" and result.signal.direction == "LONG":

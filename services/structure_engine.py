@@ -3,6 +3,8 @@ from typing import Optional
 
 import pandas as pd
 
+from config import Config
+
 
 @dataclass
 class MarketStructure:
@@ -16,7 +18,7 @@ class MarketStructure:
 
 @dataclass
 class SetupContext:
-    setup_type: str  # PULLBACK_CONTINUATION / BREAKOUT_RETEST / NONE
+    setup_type: str  # PULLBACK_CONTINUATION / BREAKOUT_RETEST / MOMENTUM_CONTINUATION / NONE
     direction: str   # LONG / SHORT / NONE
     reason: str
 
@@ -213,6 +215,98 @@ class StructureEngine:
             reason="breakout retest не найден",
         )
 
+    def _safe_float(self, value, default: float = 0.0) -> float:
+        try:
+            if pd.isna(value):
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    def _indicator_trend(self, row: pd.Series, min_adx: float) -> str:
+        close = self._safe_float(row.get("close"))
+        ema20 = self._safe_float(row.get("ema20"))
+        ema50 = self._safe_float(row.get("ema50"))
+        ema_fast = self._safe_float(row.get("ema_fast"))
+        ema_slow = self._safe_float(row.get("ema_slow"))
+        adx = self._safe_float(row.get("adx"))
+
+        if close <= 0 or ema20 <= 0 or ema50 <= 0:
+            return "NONE"
+
+        bullish_ema = close > ema20 and ema20 >= ema50
+        bearish_ema = close < ema20 and ema20 <= ema50
+
+        if ema_fast > 0 and ema_slow > 0:
+            bullish_ema = bullish_ema or (close > ema20 and ema_fast > ema_slow)
+            bearish_ema = bearish_ema or (close < ema20 and ema_fast < ema_slow)
+
+        if adx < min_adx:
+            return "NONE"
+
+        if bullish_ema:
+            return "LONG"
+
+        if bearish_ema:
+            return "SHORT"
+
+        return "NONE"
+
+    def detect_momentum_continuation(
+        self,
+        htf_df: pd.DataFrame,
+        mtf_df: pd.DataFrame,
+        ltf_df: pd.DataFrame,
+    ) -> SetupContext:
+        if len(htf_df) < 60 or len(mtf_df) < 60 or len(ltf_df) < 10:
+            return SetupContext("NONE", "NONE", "недостаточно данных для momentum continuation")
+
+        htf_last = htf_df.iloc[-2]
+        mtf_last = mtf_df.iloc[-2]
+        ltf_last = ltf_df.iloc[-2]
+        ltf_prev = ltf_df.iloc[-3]
+
+        htf_dir = self._indicator_trend(htf_last, Config.MIN_ADX_4H)
+        mtf_dir = self._indicator_trend(mtf_last, max(Config.MIN_ADX_1H - 2, 10))
+
+        close = self._safe_float(ltf_last.get("close"))
+        prev_close = self._safe_float(ltf_prev.get("close"))
+        ema20 = self._safe_float(ltf_last.get("ema20"))
+        ema50 = self._safe_float(ltf_last.get("ema50"))
+        macd_hist = self._safe_float(ltf_last.get("macd_hist"))
+        prev_macd_hist = self._safe_float(ltf_prev.get("macd_hist"))
+        volume_ratio = self._safe_float(ltf_last.get("quote_volume_ratio"), 1.0)
+
+        if htf_dir == "LONG" and mtf_dir in {"LONG", "NONE"}:
+            ltf_aligned = close >= ema20 or close >= ema50
+            momentum_ok = close > prev_close and (macd_hist >= 0 or macd_hist > prev_macd_hist)
+            volume_ok = volume_ratio >= Config.MIN_CONFIRMATION_VOLUME_RATIO
+
+            if ltf_aligned and momentum_ok and volume_ok:
+                return SetupContext(
+                    setup_type="MOMENTUM_CONTINUATION",
+                    direction="LONG",
+                    reason="тренд по EMA/ADX + продолжение импульса на 15m",
+                )
+
+        if htf_dir == "SHORT" and mtf_dir in {"SHORT", "NONE"}:
+            ltf_aligned = close <= ema20 or close <= ema50
+            momentum_ok = close < prev_close and (macd_hist <= 0 or macd_hist < prev_macd_hist)
+            volume_ok = volume_ratio >= Config.MIN_CONFIRMATION_VOLUME_RATIO
+
+            if ltf_aligned and momentum_ok and volume_ok:
+                return SetupContext(
+                    setup_type="MOMENTUM_CONTINUATION",
+                    direction="SHORT",
+                    reason="тренд по EMA/ADX + продолжение импульса на 15m",
+                )
+
+        return SetupContext(
+            setup_type="NONE",
+            direction="NONE",
+            reason="momentum continuation не найден",
+        )
+
     def detect_setup(
         self,
         htf_df: pd.DataFrame,
@@ -226,6 +320,10 @@ class StructureEngine:
         breakout = self.detect_breakout_retest(mtf_df, ltf_df)
         if breakout.setup_type != "NONE":
             return breakout
+
+        momentum = self.detect_momentum_continuation(htf_df, mtf_df, ltf_df)
+        if momentum.setup_type != "NONE":
+            return momentum
 
         return SetupContext(
             setup_type="NONE",
