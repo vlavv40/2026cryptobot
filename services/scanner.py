@@ -145,6 +145,7 @@ class MarketScanner:
             "tp2": signal.tp2,
             "tp3": signal.tp3,
             "score": signal.score,
+            "signal_type": getattr(signal, "signal_type", "UNKNOWN"),
             "entry_price": execution_report.get("entry_price"),
             "initial_position_qty": execution_report.get("qty"),
             "tp1_qty": execution_report.get("tp1_qty"),
@@ -164,6 +165,9 @@ class MarketScanner:
 
     async def get_pair_stats(self) -> list[dict]:
         return await self.trade_tracker.get_pair_stats()
+
+    async def refresh_symbol_stats(self) -> list[dict]:
+        return await self.trade_tracker.refresh_symbol_stats()
 
     async def get_best_pairs(self, min_closed: int = 1, limit: int = 5) -> list[dict]:
         return await self.trade_tracker.get_best_pairs(min_closed=min_closed, limit=limit)

@@ -252,6 +252,41 @@ class StructureEngine:
 
         return "NONE"
 
+    def _soft_indicator_trend(self, row: pd.Series, min_adx: float) -> str:
+        close = self._safe_float(row.get("close"))
+        ema20 = self._safe_float(row.get("ema20"))
+        ema50 = self._safe_float(row.get("ema50"))
+        ema_fast = self._safe_float(row.get("ema_fast"))
+        ema_slow = self._safe_float(row.get("ema_slow"))
+        adx = self._safe_float(row.get("adx"))
+        rsi = self._safe_float(row.get("rsi"))
+        macd_hist = self._safe_float(row.get("macd_hist"))
+
+        if close <= 0 or ema20 <= 0 or ema50 <= 0:
+            return "NONE"
+
+        if adx < max(min_adx - 4.0, 10.0):
+            return "NONE"
+
+        bullish_bias = (
+            (close > ema20 and ema20 >= ema50 * 0.997)
+            or (close > ema50 and ema_fast > ema_slow)
+            or (rsi >= 52 and macd_hist >= 0 and close >= ema20 * 0.995)
+        )
+        bearish_bias = (
+            (close < ema20 and ema20 <= ema50 * 1.003)
+            or (close < ema50 and ema_fast < ema_slow)
+            or (rsi <= 48 and macd_hist <= 0 and close <= ema20 * 1.005)
+        )
+
+        if bullish_bias and not bearish_bias:
+            return "LONG"
+
+        if bearish_bias and not bullish_bias:
+            return "SHORT"
+
+        return "NONE"
+
     def detect_momentum_continuation(
         self,
         htf_df: pd.DataFrame,
@@ -266,8 +301,8 @@ class StructureEngine:
         ltf_last = ltf_df.iloc[-2]
         ltf_prev = ltf_df.iloc[-3]
 
-        htf_dir = self._indicator_trend(htf_last, Config.MIN_ADX_4H)
-        mtf_dir = self._indicator_trend(mtf_last, max(Config.MIN_ADX_1H - 2, 10))
+        htf_dir = self._soft_indicator_trend(htf_last, Config.MIN_ADX_4H)
+        mtf_dir = self._soft_indicator_trend(mtf_last, Config.MIN_ADX_1H)
 
         close = self._safe_float(ltf_last.get("close"))
         prev_close = self._safe_float(ltf_prev.get("close"))
@@ -275,30 +310,38 @@ class StructureEngine:
         ema50 = self._safe_float(ltf_last.get("ema50"))
         macd_hist = self._safe_float(ltf_last.get("macd_hist"))
         prev_macd_hist = self._safe_float(ltf_prev.get("macd_hist"))
+        rsi = self._safe_float(ltf_last.get("rsi"), 50.0)
+        atr_ratio = self._safe_float(ltf_last.get("atr_ratio"))
+        adx = self._safe_float(ltf_last.get("adx"))
         volume_ratio = self._safe_float(ltf_last.get("quote_volume_ratio"), 1.0)
+        min_volume_ratio = min(Config.MIN_CONFIRMATION_VOLUME_RATIO, Config.MIN_SETUP_VOLUME_RATIO)
+        min_atr_ratio = min(Config.MIN_ATR_RATIO_15M, Config.MIN_SETUP_ATR_RATIO)
+        atr_ok = atr_ratio >= min_atr_ratio or adx >= 22
 
         if htf_dir == "LONG" and mtf_dir in {"LONG", "NONE"}:
-            ltf_aligned = close >= ema20 or close >= ema50
-            momentum_ok = close > prev_close and (macd_hist >= 0 or macd_hist > prev_macd_hist)
-            volume_ok = volume_ratio >= Config.MIN_CONFIRMATION_VOLUME_RATIO
+            ltf_aligned = close >= min(ema20, ema50) * 0.998
+            momentum_ok = close > prev_close or macd_hist > prev_macd_hist
+            rsi_ok = 42 <= rsi <= Config.LONG_MAX_RSI_ENTRY
+            volume_ok = volume_ratio >= min_volume_ratio
 
-            if ltf_aligned and momentum_ok and volume_ok:
+            if ltf_aligned and momentum_ok and rsi_ok and volume_ok and atr_ok:
                 return SetupContext(
                     setup_type="MOMENTUM_CONTINUATION",
                     direction="LONG",
-                    reason="тренд по EMA/ADX + продолжение импульса на 15m",
+                    reason="тренд по EMA/ADX + рабочее продолжение импульса на 15m",
                 )
 
         if htf_dir == "SHORT" and mtf_dir in {"SHORT", "NONE"}:
-            ltf_aligned = close <= ema20 or close <= ema50
-            momentum_ok = close < prev_close and (macd_hist <= 0 or macd_hist < prev_macd_hist)
-            volume_ok = volume_ratio >= Config.MIN_CONFIRMATION_VOLUME_RATIO
+            ltf_aligned = close <= max(ema20, ema50) * 1.002
+            momentum_ok = close < prev_close or macd_hist < prev_macd_hist
+            rsi_ok = Config.SHORT_MIN_RSI_ENTRY <= rsi <= 58
+            volume_ok = volume_ratio >= min_volume_ratio
 
-            if ltf_aligned and momentum_ok and volume_ok:
+            if ltf_aligned and momentum_ok and rsi_ok and volume_ok and atr_ok:
                 return SetupContext(
                     setup_type="MOMENTUM_CONTINUATION",
                     direction="SHORT",
-                    reason="тренд по EMA/ADX + продолжение импульса на 15m",
+                    reason="тренд по EMA/ADX + рабочее продолжение импульса на 15m",
                 )
 
         return SetupContext(

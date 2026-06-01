@@ -27,14 +27,26 @@ class BinanceFuturesClient:
 
         symbols = []
         for symbol_info in data.get("symbols", []):
+            symbol = symbol_info.get("symbol", "")
             if (
                 symbol_info.get("contractType") == "PERPETUAL"
                 and symbol_info.get("quoteAsset") == "USDT"
                 and symbol_info.get("status") == "TRADING"
+                and self._is_valid_scan_symbol(symbol)
             ):
-                symbols.append(symbol_info["symbol"])
+                symbols.append(symbol)
 
         return symbols
+
+    def _is_valid_scan_symbol(self, symbol: str) -> bool:
+        if not symbol or not symbol.endswith("USDT"):
+            return False
+
+        if not symbol.isascii():
+            return False
+
+        base = symbol[:-4]
+        return base.replace("1000", "").isalnum()
 
     async def get_24h_tickers(self) -> list[dict]:
         url = f"{self.base_url}/fapi/v1/ticker/24hr"

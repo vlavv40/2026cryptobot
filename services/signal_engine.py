@@ -298,10 +298,22 @@ class SignalEngine:
         last = self._closed(ltf_df)
         prev = self._prev_closed(ltf_df)
 
-        if last["atr_ratio"] < Config.MIN_ATR_RATIO_15M:
+        atr_ratio_value = self._safe_float(last.get("atr_ratio"))
+        volume_ratio = self._safe_float(last.get("quote_volume_ratio"), 1.0)
+        adx = self._safe_float(last.get("adx"))
+        min_atr_ratio = Config.MIN_ATR_RATIO_15M
+        min_volume_ratio = Config.MIN_CONFIRMATION_VOLUME_RATIO
+
+        if Config.STRATEGY_MODE != "SNIPER":
+            min_atr_ratio = min(min_atr_ratio, Config.MIN_SETUP_ATR_RATIO)
+            if adx >= 22:
+                min_atr_ratio = min(min_atr_ratio, Config.MIN_SETUP_ATR_RATIO * 0.85)
+            min_volume_ratio = min(min_volume_ratio, max(Config.MIN_SETUP_VOLUME_RATIO, 0.55))
+
+        if atr_ratio_value < min_atr_ratio:
             return False, "15m слишком вялый"
 
-        if last["quote_volume_ratio"] < Config.MIN_CONFIRMATION_VOLUME_RATIO:
+        if volume_ratio < min_volume_ratio:
             return False, "15m денежный объём слишком слабый"
 
         last_close = float(last["close"])

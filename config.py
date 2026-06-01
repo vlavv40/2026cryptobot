@@ -135,6 +135,8 @@ class Config:
 
     SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.9"))
     SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.05"))
+    MIN_SETUP_ATR_RATIO = float(os.getenv("MIN_SETUP_ATR_RATIO", "0.0024"))
+    MIN_SETUP_VOLUME_RATIO = float(os.getenv("MIN_SETUP_VOLUME_RATIO", "0.55"))
 
     MIN_SCORE = STRONG_MIN_SCORE
     MIN_RR = STRONG_MIN_RR

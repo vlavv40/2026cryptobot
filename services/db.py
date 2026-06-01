@@ -67,6 +67,7 @@ class Database:
             await conn.execute("""
             ALTER TABLE tracked_signals
             ADD COLUMN IF NOT EXISTS active_stop_loss DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS signal_type TEXT NOT NULL DEFAULT 'UNKNOWN',
             ADD COLUMN IF NOT EXISTS protection_stage TEXT NOT NULL DEFAULT 'INITIAL',
             ADD COLUMN IF NOT EXISTS tp1_hit_at TIMESTAMP,
             ADD COLUMN IF NOT EXISTS tp2_hit_at TIMESTAMP,
@@ -124,6 +125,21 @@ class Database:
             """)
 
             await conn.execute("""
+            ALTER TABLE paper_trades
+            ADD COLUMN IF NOT EXISTS active_stop_loss DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS protection_stage TEXT NOT NULL DEFAULT 'INITIAL',
+            ADD COLUMN IF NOT EXISTS tp1_hit_at TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS tp2_hit_at TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS protection_updated_at TIMESTAMP;
+            """)
+
+            await conn.execute("""
+            UPDATE paper_trades
+            SET active_stop_loss = stop_loss
+            WHERE active_stop_loss IS NULL;
+            """)
+
+            await conn.execute("""
             CREATE TABLE IF NOT EXISTS strategy_parameters (
                 key TEXT PRIMARY KEY,
                 value JSONB NOT NULL,
@@ -159,6 +175,25 @@ class Database:
                 symbol TEXT NOT NULL,
                 payload JSONB NOT NULL,
                 snapshot_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS symbol_stats (
+                symbol TEXT PRIMARY KEY,
+                signals_count INTEGER NOT NULL DEFAULT 0,
+                closed_count INTEGER NOT NULL DEFAULT 0,
+                open_count INTEGER NOT NULL DEFAULT 0,
+                wins INTEGER NOT NULL DEFAULT 0,
+                losses INTEGER NOT NULL DEFAULT 0,
+                winrate DOUBLE PRECISION NOT NULL DEFAULT 0,
+                expectancy DOUBLE PRECISION NOT NULL DEFAULT 0,
+                total_r DOUBLE PRECISION NOT NULL DEFAULT 0,
+                avg_hold_minutes DOUBLE PRECISION NOT NULL DEFAULT 0,
+                max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
+                profit_factor TEXT NOT NULL DEFAULT '0',
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMP DEFAULT NOW()
             );
             """)
 
@@ -240,7 +275,9 @@ class Database:
                 )
                 await conn.execute("TRUNCATE paper_trades RESTART IDENTITY;")
                 await conn.execute("TRUNCATE equity_history RESTART IDENTITY;")
+                await conn.execute("TRUNCATE symbol_stats_snapshots RESTART IDENTITY;")
                 await conn.execute("TRUNCATE symbol_whitelist;")
+                await conn.execute("TRUNCATE symbol_stats;")
                 await conn.execute(
                     """
                     UPDATE paper_state
@@ -263,7 +300,12 @@ class Database:
                 await conn.execute("TRUNCATE equity_history RESTART IDENTITY;")
                 await conn.execute("TRUNCATE symbol_stats_snapshots RESTART IDENTITY;")
                 await conn.execute("TRUNCATE symbol_whitelist;")
+                await conn.execute("TRUNCATE symbol_stats;")
                 await conn.execute("TRUNCATE strategy_parameters;")
+                await conn.execute("""
+                TRUNCATE user_subscriptions, user_risk_settings, user_api_keys, app_users
+                RESTART IDENTITY;
+                """)
                 await conn.execute("""
                 INSERT INTO paper_state (id, start_balance, balance, risk_per_trade)
                 VALUES (1, 10000, 10000, 0.01)

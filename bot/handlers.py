@@ -161,7 +161,8 @@ async def _send_status(message: Message, dispatcher: Dispatcher):
         "💵 <b>Paper</b>\n"
         f"PnL: <b>{fmt_money(paper_stats.get('pnl_usdt'))}</b>\n"
         f"Risk open: <b>{fmt_money(paper_stats.get('open_risk_usdt'))}</b>\n"
-        f"Volume open: <b>{fmt_money(paper_stats.get('open_volume_usdt'))}</b>",
+        f"Volume open: <b>{fmt_money(paper_stats.get('open_volume_usdt'))}</b>\n"
+        f"Protected: <b>{paper_stats.get('protected_trades', 0)}</b>",
         reply_markup=get_main_menu(),
     )
 
@@ -182,6 +183,7 @@ async def _send_signal_stats(message: Message, dispatcher: Dispatcher):
         f"Total PnL: <b>{fmt_money(paper_stats.get('pnl_usdt'))}</b>\n"
         f"Open Trades: <b>{paper_stats.get('open_trades')}</b>\n"
         f"Closed Trades: <b>{paper_stats.get('closed_trades')}</b>\n"
+        f"Protected Trades: <b>{paper_stats.get('protected_trades', 0)}</b>\n"
         f"Open Risk: <b>{fmt_money(paper_stats.get('open_risk_usdt'))}</b>\n"
         f"Open Volume: <b>{fmt_money(paper_stats.get('open_volume_usdt'))}</b>\n\n"
         "📊 <b>Signal R</b>\n"
@@ -269,8 +271,9 @@ async def _send_open_trades(message: Message, dispatcher: Dispatcher):
         text += (
             f"{emoji} <b>{t.get('symbol', '-')}</b> | <b>{direction}</b>\n"
             f"Тип: <b>{t.get('signal_type', '-')}</b>\n"
+            f"Стадия: <b>{t.get('protection_stage', 'INITIAL')}</b>\n"
             f"Вход: <b>{fmt_price(t.get('entry_min'))} - {fmt_price(t.get('entry_max'))}</b>\n"
-            f"Stop: <b>{fmt_price(t.get('stop_loss'))}</b>\n"
+            f"Stop: <b>{fmt_price(t.get('active_stop_loss') or t.get('stop_loss'))}</b>\n"
             f"TP1: <b>{fmt_price(t.get('tp1'))}</b>\n"
             f"TP2: <b>{fmt_price(t.get('tp2'))}</b>\n"
             f"TP3: <b>{fmt_price(t.get('tp3'))}</b>\n\n"
@@ -328,7 +331,7 @@ async def _send_history(message: Message, dispatcher: Dispatcher):
 
 async def _send_symbol_stats(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    rows = await scanner.get_pair_stats()
+    rows = await scanner.refresh_symbol_stats()
 
     if not rows:
         await send_dashboard(

@@ -98,13 +98,13 @@ class TradeTracker:
                     id, symbol, direction, entry_min, entry_max, stop_loss,
                     tp1, tp2, tp3, score, status, realized_r,
                     created_at, closed_at, notified, active_stop_loss,
-                    protection_stage, entry_price, initial_position_qty,
+                    signal_type, protection_stage, entry_price, initial_position_qty,
                     tp1_qty, tp2_qty, tp3_qty
                 )
                 VALUES (
                     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                    'OPEN',NULL,$11,NULL,FALSE,$6,'INITIAL',
-                    $12,$13,$14,$15,$16
+                    'OPEN',NULL,$11,NULL,FALSE,$6,$12,'INITIAL',
+                    $13,$14,$15,$16,$17
                 )
                 """,
                 payload["id"],
@@ -118,6 +118,7 @@ class TradeTracker:
                 payload["tp3"],
                 payload["score"],
                 datetime.utcnow(),
+                payload.get("signal_type", "UNKNOWN"),
                 payload.get("entry_price"),
                 payload.get("initial_position_qty"),
                 payload.get("tp1_qty"),
@@ -216,7 +217,10 @@ class TradeTracker:
             else:
                 return None
 
-        return dict(row) if row else None
+        updated = dict(row) if row else None
+        if updated:
+            await self.refresh_symbol_stats()
+        return updated
 
     async def update_signal(self, target_id: str, new_status: str):
         all_signals = await self.get_all_signals(include_before_reset=True)
@@ -245,6 +249,7 @@ class TradeTracker:
         current["realized_r"] = realized_r
         current["notified"] = False
         await self.record_equity_snapshot("signals", {"last_signal_id": target_id, "status": new_status})
+        await self.refresh_symbol_stats()
         return current
 
     async def mark_notified(self, target_id: str):
@@ -311,11 +316,72 @@ class TradeTracker:
                 json.dumps(payload),
             )
 
+    async def refresh_symbol_stats(self) -> list[dict]:
+        rows = await self.get_pair_stats()
+
+        assert db.pool is not None
+        async with db.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("TRUNCATE symbol_stats;")
+
+                for item in rows:
+                    await conn.execute(
+                        """
+                        INSERT INTO symbol_stats (
+                            symbol, signals_count, closed_count, open_count,
+                            wins, losses, winrate, expectancy, total_r,
+                            avg_hold_minutes, max_drawdown, profit_factor,
+                            payload, updated_at
+                        )
+                        VALUES (
+                            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+                            $13::jsonb,NOW()
+                        )
+                        ON CONFLICT (symbol)
+                        DO UPDATE SET
+                            signals_count=EXCLUDED.signals_count,
+                            closed_count=EXCLUDED.closed_count,
+                            open_count=EXCLUDED.open_count,
+                            wins=EXCLUDED.wins,
+                            losses=EXCLUDED.losses,
+                            winrate=EXCLUDED.winrate,
+                            expectancy=EXCLUDED.expectancy,
+                            total_r=EXCLUDED.total_r,
+                            avg_hold_minutes=EXCLUDED.avg_hold_minutes,
+                            max_drawdown=EXCLUDED.max_drawdown,
+                            profit_factor=EXCLUDED.profit_factor,
+                            payload=EXCLUDED.payload,
+                            updated_at=NOW()
+                        """,
+                        item["symbol"],
+                        int(item.get("signals_count") or item.get("total") or 0),
+                        int(item.get("closed_count") or item.get("closed") or 0),
+                        int(item.get("open_count") or item.get("open") or 0),
+                        int(item.get("wins") or 0),
+                        int(item.get("losses") or 0),
+                        float(item.get("winrate") or 0.0),
+                        float(item.get("expectancy") or 0.0),
+                        float(item.get("total_r") or 0.0),
+                        float(item.get("avg_hold_minutes") or 0.0),
+                        float(item.get("max_drawdown") or 0.0),
+                        str(item.get("profit_factor") or "0"),
+                        json.dumps(item, ensure_ascii=False, default=str),
+                    )
+
+        return rows
+
     async def refresh_symbol_whitelist(self) -> list[dict]:
-        rows = await self.get_best_pairs(
-            min_closed=Config.AUTO_WHITELIST_MIN_CLOSED_TRADES,
-            limit=Config.AUTO_WHITELIST_SIZE,
+        all_rows = await self.refresh_symbol_stats()
+        rows = [
+            item
+            for item in all_rows
+            if int(item.get("closed") or 0) >= Config.AUTO_WHITELIST_MIN_CLOSED_TRADES
+        ]
+        rows.sort(
+            key=lambda x: (x["expectancy"], x["winrate"], x["closed"]),
+            reverse=True,
         )
+        rows = rows[: Config.AUTO_WHITELIST_SIZE]
         rows = [
             item
             for item in rows
@@ -405,12 +471,18 @@ class TradeTracker:
             writer.writerow([
                 "symbol",
                 "direction",
+                "signal_type",
+                "score",
                 "entry_min",
                 "entry_max",
                 "stop_loss",
+                "active_stop_loss",
+                "protection_stage",
                 "tp1",
                 "tp2",
                 "tp3",
+                "tp1_hit_at",
+                "tp2_hit_at",
                 "status",
                 "realized_r",
                 "created_at",
@@ -421,12 +493,18 @@ class TradeTracker:
                 writer.writerow([
                     s["symbol"],
                     s["direction"],
+                    s.get("signal_type"),
+                    s.get("score"),
                     s["entry_min"],
                     s["entry_max"],
                     s["stop_loss"],
+                    s.get("active_stop_loss"),
+                    s.get("protection_stage"),
                     s["tp1"],
                     s["tp2"],
                     s["tp3"],
+                    s.get("tp1_hit_at"),
+                    s.get("tp2_hit_at"),
                     s["status"],
                     s.get("realized_r"),
                     s["created_at"],
@@ -438,7 +516,7 @@ class TradeTracker:
     async def export_excel(self) -> str:
         signals = await self.get_all_signals()
         stats = await self.get_stats()
-        pair_stats = await self.get_pair_stats()
+        pair_stats = await self.refresh_symbol_stats()
         side_stats = await self.get_side_stats()
         equity_curve = await self.get_equity_curve()
 

@@ -145,6 +145,7 @@ class StatsAnalyzer:
             return item.get("status") in {"TP1_HIT", "TP2_HIT", "TP3_HIT"}
 
         wins = sum(1 for x in closed_items if is_win(x))
+        losses = sum(1 for x in closed_items if not is_win(x))
         winrate = round((wins / closed) * 100, 2) if closed > 0 else 0.0
         stop_rate = round((stop_hit / closed) * 100, 2) if closed > 0 else 0.0
 
@@ -170,6 +171,8 @@ class StatsAnalyzer:
             "total": total,
             "open": open_count,
             "closed": closed,
+            "wins": wins,
+            "losses": losses,
             "tp1_hit": tp1_hit,
             "tp2_hit": tp2_hit,
             "tp3_hit": tp3_hit,
@@ -198,6 +201,9 @@ class StatsAnalyzer:
             rows.append(
                 {
                     "symbol": symbol,
+                    "signals_count": stats["total"],
+                    "closed_count": stats["closed"],
+                    "open_count": stats["open"],
                     **stats,
                 }
             )
