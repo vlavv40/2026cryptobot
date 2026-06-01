@@ -4,8 +4,11 @@ from config import Config
 
 
 class Database:
+    APP_LOCK_ID = 8615083355
+
     def __init__(self):
         self.pool: asyncpg.Pool | None = None
+        self.lock_conn: asyncpg.Connection | None = None
 
     async def connect(self):
         if self.pool is not None:
@@ -16,6 +19,22 @@ class Database:
 
         self.pool = await asyncpg.create_pool(Config.POSTGRES_URI, min_size=1, max_size=5)
         await self.init_schema()
+
+    async def acquire_app_lock(self) -> bool:
+        assert self.pool is not None
+
+        if self.lock_conn is not None:
+            return True
+
+        conn = await self.pool.acquire()
+        locked = await conn.fetchval("SELECT pg_try_advisory_lock($1)", self.APP_LOCK_ID)
+
+        if not locked:
+            await self.pool.release(conn)
+            return False
+
+        self.lock_conn = conn
+        return True
 
     async def init_schema(self):
         assert self.pool is not None

@@ -308,7 +308,7 @@ class SignalEngine:
             min_atr_ratio = min(min_atr_ratio, Config.MIN_SETUP_ATR_RATIO)
             if adx >= 22:
                 min_atr_ratio = min(min_atr_ratio, Config.MIN_SETUP_ATR_RATIO * 0.85)
-            min_volume_ratio = min(min_volume_ratio, max(Config.MIN_SETUP_VOLUME_RATIO, 0.55))
+            min_volume_ratio = min(min_volume_ratio, Config.MIN_SETUP_VOLUME_RATIO)
 
         if atr_ratio_value < min_atr_ratio:
             return False, "15m слишком вялый"

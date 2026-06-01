@@ -863,5 +863,12 @@ class MarketScanner:
             if not sent_signal_symbols:
                 logger.info("Сильных новых сигналов не найдено.")
 
+            if skip_counter:
+                top_skip_reasons = ", ".join(
+                    f"{reason}: {count}"
+                    for reason, count in skip_counter.most_common(8)
+                )
+                logger.info(f"[SKIP SUMMARY] {top_skip_reasons}")
+
             await self._log_paper_stats()
             return results

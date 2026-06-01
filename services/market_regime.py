@@ -117,8 +117,23 @@ class MarketRegimeAnalyzer:
             score += 2.0
             reason = "нисходящий тренд: структура + EMA alignment + ADX"
 
+        elif structure_report.trend == "RANGE" and adx >= 18:
+            if almost_bullish_alignment and rsi >= 50:
+                is_trending = True
+                direction = "LONG"
+                regime = "TREND_BULL"
+                score += 1.7
+                reason = "восходящий тренд: EMA/ADX подтверждают движение без чистой swing-структуры"
+
+            elif almost_bearish_alignment and rsi <= 50:
+                is_trending = True
+                direction = "SHORT"
+                regime = "TREND_BEAR"
+                score += 1.7
+                reason = "нисходящий тренд: EMA/ADX подтверждают движение без чистой swing-структуры"
+
         # 2. Range detection — немного мягче
-        if structure_report.trend == "RANGE" or adx < 12:
+        if not is_trending and (structure_report.trend == "RANGE" or adx < 12):
             is_ranging = True
             regime = "RANGE"
             direction = "NONE"

@@ -287,6 +287,124 @@ class StructureEngine:
 
         return "NONE"
 
+    def _direction_score(self, row: pd.Series, direction: str, min_adx: float) -> float:
+        close = self._safe_float(row.get("close"))
+        ema20 = self._safe_float(row.get("ema20"))
+        ema50 = self._safe_float(row.get("ema50"))
+        ema_fast = self._safe_float(row.get("ema_fast"))
+        ema_slow = self._safe_float(row.get("ema_slow"))
+        adx = self._safe_float(row.get("adx"))
+        rsi = self._safe_float(row.get("rsi"), 50.0)
+        macd_hist = self._safe_float(row.get("macd_hist"))
+
+        if close <= 0 or ema20 <= 0 or ema50 <= 0:
+            return 0.0
+
+        score = 0.0
+
+        if adx >= min_adx:
+            score += 1.0
+        elif adx >= max(min_adx - 4.0, 10.0):
+            score += 0.5
+
+        if direction == "LONG":
+            if close >= ema20:
+                score += 0.7
+            if close >= ema50:
+                score += 0.5
+            if ema20 >= ema50:
+                score += 0.5
+            if ema_fast > ema_slow:
+                score += 0.4
+            if macd_hist >= 0:
+                score += 0.5
+            if rsi >= 50:
+                score += 0.4
+        else:
+            if close <= ema20:
+                score += 0.7
+            if close <= ema50:
+                score += 0.5
+            if ema20 <= ema50:
+                score += 0.5
+            if ema_fast < ema_slow:
+                score += 0.4
+            if macd_hist <= 0:
+                score += 0.5
+            if rsi <= 50:
+                score += 0.4
+
+        return score
+
+    def detect_adaptive_continuation(
+        self,
+        htf_df: pd.DataFrame,
+        mtf_df: pd.DataFrame,
+        ltf_df: pd.DataFrame,
+    ) -> SetupContext:
+        if len(htf_df) < 60 or len(mtf_df) < 60 or len(ltf_df) < 10:
+            return SetupContext("NONE", "NONE", "недостаточно данных для adaptive continuation")
+
+        htf_last = htf_df.iloc[-2]
+        mtf_last = mtf_df.iloc[-2]
+        ltf_last = ltf_df.iloc[-2]
+        ltf_prev = ltf_df.iloc[-3]
+
+        close = self._safe_float(ltf_last.get("close"))
+        prev_close = self._safe_float(ltf_prev.get("close"))
+        macd_hist = self._safe_float(ltf_last.get("macd_hist"))
+        prev_macd_hist = self._safe_float(ltf_prev.get("macd_hist"))
+        rsi = self._safe_float(ltf_last.get("rsi"), 50.0)
+        atr_ratio = self._safe_float(ltf_last.get("atr_ratio"))
+        adx = self._safe_float(ltf_last.get("adx"))
+        volume_ratio = self._safe_float(ltf_last.get("quote_volume_ratio"), 1.0)
+
+        if volume_ratio < Config.MIN_SETUP_VOLUME_RATIO:
+            return SetupContext("NONE", "NONE", "adaptive continuation: слабый 15m volume")
+
+        if atr_ratio < Config.MIN_SETUP_ATR_RATIO and adx < 22:
+            return SetupContext("NONE", "NONE", "adaptive continuation: слабый 15m ATR")
+
+        long_score = (
+            self._direction_score(htf_last, "LONG", Config.MIN_ADX_4H) * 1.1
+            + self._direction_score(mtf_last, "LONG", Config.MIN_ADX_1H)
+            + self._direction_score(ltf_last, "LONG", max(Config.MIN_ADX_1H - 2, 10))
+        )
+        short_score = (
+            self._direction_score(htf_last, "SHORT", Config.MIN_ADX_4H) * 1.1
+            + self._direction_score(mtf_last, "SHORT", Config.MIN_ADX_1H)
+            + self._direction_score(ltf_last, "SHORT", max(Config.MIN_ADX_1H - 2, 10))
+        )
+
+        long_momentum = (
+            (close > prev_close or macd_hist > prev_macd_hist)
+            and 42 <= rsi <= Config.LONG_MAX_RSI_ENTRY
+        )
+        short_momentum = (
+            (close < prev_close or macd_hist < prev_macd_hist)
+            and Config.SHORT_MIN_RSI_ENTRY <= rsi <= 58
+        )
+
+        if long_score >= 6.1 and long_score >= short_score + 0.9 and long_momentum:
+            return SetupContext(
+                setup_type="MOMENTUM_CONTINUATION",
+                direction="LONG",
+                reason="адаптивный trend/momentum continuation: EMA/ADX/MACD согласованы",
+            )
+
+        if short_score >= 6.1 and short_score >= long_score + 0.9 and short_momentum:
+            return SetupContext(
+                setup_type="MOMENTUM_CONTINUATION",
+                direction="SHORT",
+                reason="адаптивный trend/momentum continuation: EMA/ADX/MACD согласованы",
+            )
+
+        return SetupContext(
+            setup_type="NONE",
+            direction="NONE",
+            reason="adaptive continuation не найден",
+        )
+
     def detect_momentum_continuation(
         self,
         htf_df: pd.DataFrame,
@@ -367,6 +485,10 @@ class StructureEngine:
         momentum = self.detect_momentum_continuation(htf_df, mtf_df, ltf_df)
         if momentum.setup_type != "NONE":
             return momentum
+
+        adaptive = self.detect_adaptive_continuation(htf_df, mtf_df, ltf_df)
+        if adaptive.setup_type != "NONE":
+            return adaptive
 
         return SetupContext(
             setup_type="NONE",

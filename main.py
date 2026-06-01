@@ -2,6 +2,7 @@ import asyncio
 import sys
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramConflictError
 
 from bot.handlers import router
 from config import Config
@@ -33,6 +34,19 @@ async def send_startup_message(bot: Bot):
         "Хранение: PostgreSQL"
     )
     await send_text_to_all(bot, Config.CHAT_IDS, text)
+
+
+async def verify_telegram_polling_owner(bot: Bot):
+    logger.info("Boot: проверяю Telegram polling ownership")
+
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.get_updates(timeout=0, allowed_updates=[])
+    except TelegramConflictError as error:
+        raise RuntimeError(
+            "Telegram polling conflict: где-то уже запущен бот с этим BOT_TOKEN. "
+            "Останови второй сервис/локальный процесс или перевыпусти токен в BotFather."
+        ) from error
 
 
 async def auto_scan_loop(bot: Bot, scanner: MarketScanner):
@@ -78,8 +92,18 @@ async def main():
     await asyncio.wait_for(db.connect(), timeout=30)
     logger.info("Boot: PostgreSQL подключён")
 
+    logger.info("Boot: беру production lock")
+    lock_acquired = await db.acquire_app_lock()
+    if not lock_acquired:
+        raise RuntimeError(
+            "Production lock уже занят: другая копия этого бота работает с этой PostgreSQL базой."
+        )
+    logger.info("Boot: production lock получен")
+
     logger.info("Boot: создаю Telegram bot/dispatcher/scanner")
     bot = Bot(token=Config.BOT_TOKEN)
+    await verify_telegram_polling_owner(bot)
+
     dp = Dispatcher()
     scanner = MarketScanner()
 
