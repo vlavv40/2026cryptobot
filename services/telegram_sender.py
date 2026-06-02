@@ -58,6 +58,15 @@ def format_signal(signal) -> str:
     if signal_type == "SETUP":
         position_hint = "Осторожный вход / сниженный риск"
 
+    risk_multiplier = signal.diagnostics.get("risk_multiplier") if getattr(signal, "diagnostics", None) else None
+    try:
+        risk_multiplier = float(risk_multiplier)
+    except Exception:
+        risk_multiplier = 1.0
+
+    if risk_multiplier < 0.99:
+        position_hint = f"{position_hint} ({risk_multiplier:.0%} от базового риска)"
+
     return (
         f"{_signal_header(signal_type, direction)}\n"
         f"━━━━━━━━━━━━━━\n\n"

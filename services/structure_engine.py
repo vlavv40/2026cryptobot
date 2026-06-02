@@ -389,8 +389,12 @@ class StructureEngine:
             and Config.SHORT_MIN_RSI_ENTRY <= rsi <= 58
         )
 
-        min_direction_score = 5.25
-        min_score_edge = 0.45
+        if Config.STRATEGY_MODE == "SNIPER":
+            min_direction_score = 5.25
+            min_score_edge = 0.45
+        else:
+            min_direction_score = 4.85
+            min_score_edge = 0.25
 
         if long_score >= min_direction_score and long_score >= short_score + min_score_edge and long_momentum:
             return SetupContext(

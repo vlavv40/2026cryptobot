@@ -558,8 +558,11 @@ class ExecutionService:
 
             rules = await self.get_symbol_rules(symbol)
 
+            risk_multiplier = float(signal.diagnostics.get("risk_multiplier") or 1.0)
+            margin_usdt = Config.AUTO_TRADE_USDT * risk_multiplier
+
             position_usdt = (
-                Config.AUTO_TRADE_USDT
+                margin_usdt
                 * Config.AUTO_TRADE_LEVERAGE
             )
 
@@ -654,9 +657,10 @@ class ExecutionService:
                 "━━━━━━━━━━━━━━\n\n"
                 f"<b>#{symbol}</b>\n"
                 f"Направление: <b>{direction}</b>\n"
-                f"Маржа: <b>{Config.AUTO_TRADE_USDT}$</b>\n"
+                f"Маржа: <b>{round(margin_usdt, 2)}$</b>\n"
                 f"Плечо: <b>x{Config.AUTO_TRADE_LEVERAGE}</b>\n"
                 f"Позиция: <b>{position_usdt}$</b>\n"
+                f"Risk multiplier: <b>{risk_multiplier}</b>\n"
                 f"Qty: <b>{qty}</b>\n\n"
                 f"Stop: <code>{stop_price}</code>\n"
                 f"TP1: <code>{tp1}</code> — 70%\n"

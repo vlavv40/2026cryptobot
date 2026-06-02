@@ -14,6 +14,7 @@ from services.paper_trader import PaperTrader
 from services.signal_engine import SignalCheckResult, SignalEngine, Signal
 from services.signal_log_store import SignalLogStore
 from services.state_store import StateStore
+from services.strategy_policy import StrategyContext, StrategyPolicy
 from services.telegram_sender import (
     format_result_message,
     format_trade_update_message,
@@ -38,6 +39,7 @@ class MarketScanner:
         self.paper = PaperTrader()
         self.btc_filter = BTCFilter()
         self.execution = ExecutionService()
+        self.strategy_policy = StrategyPolicy()
         self._scan_lock = asyncio.Lock()
         self._trade_monitor_lock = asyncio.Lock()
 
@@ -533,6 +535,11 @@ class MarketScanner:
         return Config.DEFAULT_SYMBOLS
 
     async def _load_symbols_for_scan(self) -> list[str]:
+        if Config.CORE_SYMBOLS_ONLY:
+            core_symbols = Config.CORE_SYMBOLS[: Config.MAX_SYMBOLS_TO_SCAN]
+            logger.info(f"[CORE] Сканирую только core-пары: {', '.join(core_symbols)}")
+            return core_symbols
+
         liquid_symbols = await self._load_liquid_symbols()
 
         if not Config.AUTO_WHITELIST_ENABLED:
@@ -581,7 +588,8 @@ class MarketScanner:
         open_trades = int(stats.get("open_trades") or 0)
         open_risk = float(stats.get("open_risk_usdt") or 0.0)
         open_volume = float(stats.get("open_volume_usdt") or 0.0)
-        next_risk = balance * float(stats.get("risk_per_trade") or 0.0)
+        risk_multiplier = float(signal.diagnostics.get("risk_multiplier") or 1.0)
+        next_risk = balance * float(stats.get("risk_per_trade") or 0.0) * risk_multiplier
 
         max_risk = balance * Config.MAX_TOTAL_OPEN_RISK_PCT
         max_volume = balance * Config.MAX_OPEN_VOLUME_TO_BALANCE
@@ -786,6 +794,14 @@ class MarketScanner:
                 reverse=True,
             )
 
+            policy_context = StrategyContext(
+                btc_bias=btc_bias,
+                sentiment_bias=news_decision.sentiment_bias,
+                paper_stats=await self.paper.stats(),
+                side_stats=await self.get_side_stats(),
+                open_trades=await self.paper.get_open_trades(),
+            )
+
             final_signals = []
             for signal in good_signals:
                 if await self._is_on_cooldown(signal.symbol, signal.direction):
@@ -798,7 +814,45 @@ class MarketScanner:
                     skip_counter["duplicate setup"] += 1
                     continue
 
+                policy_decision = self.strategy_policy.evaluate_signal(signal, policy_context)
+                if not policy_decision.allowed:
+                    logger.info(
+                        f"[STRATEGY POLICY SKIP] {signal.symbol} {signal.direction} | "
+                        f"{policy_decision.reason}"
+                    )
+                    skip_counter[policy_decision.reason] += 1
+                    continue
+
+                if policy_decision.score_delta:
+                    signal.score = round(signal.score + policy_decision.score_delta, 1)
+
+                signal.diagnostics["risk_multiplier"] = policy_decision.risk_multiplier
+                if policy_decision.tags:
+                    signal.diagnostics["policy_tags"] = policy_decision.tags
+
+                if policy_decision.reason != "strategy policy: allowed":
+                    signal.reasons.append(policy_decision.reason)
+
+                signal_type = self.engine.classify_signal(
+                    signal.score,
+                    float(signal.diagnostics.get("rr") or 0.0),
+                )
+                if not signal_type:
+                    reason = "strategy policy: после снижения score сигнал слабый"
+                    logger.info(f"[STRATEGY POLICY SKIP] {signal.symbol} {signal.direction} | {reason}")
+                    skip_counter[reason] += 1
+                    continue
+
+                signal.signal_type = signal_type
                 final_signals.append(signal)
+
+            final_signals.sort(
+                key=lambda s: (
+                    1 if getattr(s, "signal_type", "SETUP") == "STRONG" else 0,
+                    s.score,
+                ),
+                reverse=True,
+            )
 
             top_signals = final_signals[: Config.MAX_SIGNALS_PER_SCAN]
             sent_signal_symbols = []

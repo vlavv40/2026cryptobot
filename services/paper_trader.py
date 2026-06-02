@@ -159,9 +159,10 @@ class PaperTrader:
             state = await conn.fetchrow("SELECT * FROM paper_state WHERE id=1")
             balance = float(state["balance"])
             risk_per_trade = float(state["risk_per_trade"])
+            risk_multiplier = float(signal.diagnostics.get("risk_multiplier") or 1.0)
 
             entry_price = (signal.entry_min + signal.entry_max) / 2.0
-            risk_amount = balance * risk_per_trade
+            risk_amount = balance * risk_per_trade * risk_multiplier
             risk_per_unit = abs(entry_price - signal.stop_loss)
 
             if risk_per_unit <= 0:

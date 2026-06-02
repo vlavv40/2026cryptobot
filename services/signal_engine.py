@@ -158,12 +158,24 @@ class SignalEngine:
             "ltf_regime_reason": ltf_regime.reason,
         }
 
+        wanted_dir = "LONG" if setup_direction == "LONG" else "SHORT"
+
         if htf_regime.is_volatility_compression:
             return False, "market regime: 4h сжатие волатильности, нет follow-through", regime_diag
 
-        # 4H range — жёсткий запрет
         if htf_regime.is_ranging and not htf_regime.is_volatility_expansion:
-            return False, "market regime: 4h боковик", regime_diag
+            core_range_ok = (
+                Config.STRATEGY_MODE == "CORE_INTRADAY"
+                and mtf_regime.direction == wanted_dir
+                and (mtf_regime.is_trending or mtf_regime.is_volatility_expansion)
+            )
+
+            if not core_range_ok:
+                return False, "market regime: 4h боковик", regime_diag
+
+            regime_diag.setdefault("regime_cautions", []).append(
+                "4h боковик, но 1h даёт directional setup по core-паре"
+            )
 
         # 1H range допустим только если 4H трендовый.
         # Поэтому тут НЕ режем просто по mtf_regime.is_ranging.
@@ -171,18 +183,32 @@ class SignalEngine:
             return False, "market regime: 1h/15m сжатие волатильности", regime_diag
 
         if htf_regime.is_overextended:
-            return False, "market regime: 4h рынок перерастянут", regime_diag
+            if Config.STRATEGY_MODE == "SNIPER":
+                return False, "market regime: 4h рынок перерастянут", regime_diag
+
+            if htf_regime.direction not in {wanted_dir, "NONE"}:
+                return False, "market regime: 4h рынок перерастянут против сигнала", regime_diag
+
+            regime_diag.setdefault("regime_cautions", []).append(
+                "4h рынок перерастянут, пропускаю только как осторожный continuation/setup"
+            )
 
         if mtf_regime.is_overextended and ltf_regime.is_overextended:
             return False, "market regime: 1h/15m рынок перерастянут, вход поздний", regime_diag
 
         if htf_regime.reversal_risk:
-            return False, "market regime: высокий риск разворота на 4h", regime_diag
+            if Config.STRATEGY_MODE == "SNIPER":
+                return False, "market regime: высокий риск разворота на 4h", regime_diag
+
+            if htf_regime.direction not in {wanted_dir, "NONE"}:
+                return False, "market regime: высокий риск разворота на 4h против сигнала", regime_diag
+
+            regime_diag.setdefault("regime_cautions", []).append(
+                "4h reversal-risk в сторону сигнала, пропускаю как ранний осторожный setup"
+            )
 
         if mtf_regime.reversal_risk and htf_regime.direction != setup_direction:
             return False, "market regime: высокий риск разворота на 1h", regime_diag
-
-        wanted_dir = "LONG" if setup_direction == "LONG" else "SHORT"
 
         if htf_regime.direction not in {wanted_dir, "NONE"}:
             return False, "market regime: 4h направление против сигнала", regime_diag
@@ -193,7 +219,19 @@ class SignalEngine:
             return False, "market regime: 1h направление против сигнала", regime_diag
 
         if not (htf_regime.is_trending or htf_regime.is_volatility_expansion):
-            return False, "market regime: 4h не подтверждает тренд", regime_diag
+            soft_mtf_trend_ok = (
+                Config.STRATEGY_MODE != "SNIPER"
+                and not htf_regime.is_volatility_compression
+                and mtf_regime.direction == wanted_dir
+                and (mtf_regime.is_trending or mtf_regime.is_volatility_expansion)
+            )
+
+            if not soft_mtf_trend_ok:
+                return False, "market regime: 4h не подтверждает тренд", regime_diag
+
+            regime_diag.setdefault("regime_cautions", []).append(
+                "4h без чистого тренда, но 1h подтверждает направление"
+            )
 
         return True, "", regime_diag
 
@@ -322,25 +360,34 @@ class SignalEngine:
         prev_close = float(prev["close"])
         ema20 = float(last["ema20"])
         ema50 = float(last["ema50"])
+        atr = self._safe_float(last.get("atr"))
+        close_delta_atr = abs(last_close - prev_close) / atr if atr > 0 else 999.0
 
         if direction == "LONG":
             if last["rsi"] > Config.LONG_MAX_RSI_ENTRY:
                 return False, "LONG перегрет по RSI"
-
-            # Вход должен подтверждаться закрытием свечи в сторону LONG.
-            # Это режет слабые сигналы, где цена стоит на месте или откатывает.
-            if last_close <= prev_close:
-                return False, "LONG нет роста закрытия свечи"
-
-            # Цена не должна быть ниже всей рабочей EMA-зоны.
-            if last_close < ema20 and last_close < ema50:
-                return False, "LONG цена ниже рабочей EMA-зоны"
 
             macd_ok = (
                 last["macd_hist"] > 0
                 or last["macd"] > last["macd_signal"]
                 or last["macd_hist"] > prev["macd_hist"]
             )
+
+            # Вход должен подтверждаться закрытием свечи в сторону LONG.
+            # В BALANCED_PRO допускаем спокойный pullback, если EMA-зона и MACD не сломаны.
+            soft_close_ok = (
+                Config.STRATEGY_MODE != "SNIPER"
+                and macd_ok
+                and last_close >= min(ema20, ema50) * 0.998
+                and close_delta_atr <= 0.45
+            )
+            if last_close <= prev_close and not soft_close_ok:
+                return False, "LONG нет роста закрытия свечи"
+
+            # Цена не должна быть ниже всей рабочей EMA-зоны.
+            if last_close < ema20 and last_close < ema50:
+                return False, "LONG цена ниже рабочей EMA-зоны"
+
             if not macd_ok:
                 return False, "MACD не подтверждает LONG"
 
@@ -349,19 +396,26 @@ class SignalEngine:
         if last["rsi"] < Config.SHORT_MIN_RSI_ENTRY:
             return False, "SHORT перегрет по RSI"
 
+        macd_ok = (
+            last["macd_hist"] < 0
+            or last["macd"] < last["macd_signal"]
+            or last["macd_hist"] < prev["macd_hist"]
+        )
+
         # Вход должен подтверждаться закрытием свечи в сторону SHORT.
-        if last_close >= prev_close:
+        soft_close_ok = (
+            Config.STRATEGY_MODE != "SNIPER"
+            and macd_ok
+            and last_close <= max(ema20, ema50) * 1.002
+            and close_delta_atr <= 0.45
+        )
+        if last_close >= prev_close and not soft_close_ok:
             return False, "SHORT нет снижения закрытия свечи"
 
         # Цена не должна быть выше всей рабочей EMA-зоны.
         if last_close > ema20 and last_close > ema50:
             return False, "SHORT цена выше рабочей EMA-зоны"
 
-        macd_ok = (
-            last["macd_hist"] < 0
-            or last["macd"] < last["macd_signal"]
-            or last["macd_hist"] < prev["macd_hist"]
-        )
         if not macd_ok:
             return False, "MACD не подтверждает SHORT"
 
@@ -697,23 +751,28 @@ class SignalEngine:
 
             nearest_resistance_rr = None
             if resistance_levels:
-                nearest_resistance_rr = (resistance_levels[0] - entry_ref) / risk
+                nearest_resistance = resistance_levels[0]
+                nearest_resistance_rr = (nearest_resistance - entry_ref) / risk
                 if nearest_resistance_rr < Config.TP1_MIN_RR:
-                    target_distance = resistance_levels[0] - entry_ref
+                    previous_stop_loss = stop_loss
+                    previous_risk = risk
+                    target_distance = nearest_resistance - entry_ref
                     desired_risk = target_distance / Config.TP1_MIN_RR
                     min_risk = entry_ref * 0.0025
                     min_stop_gap = max(stop_buffer * 0.25, entry_ref * 0.0005)
                     tightened_stop = min(entry_ref - desired_risk, entry_min - min_stop_gap)
 
                     if desired_risk < min_risk or tightened_stop >= entry_min:
-                        return None
+                        resistance_levels = resistance_levels[1:]
+                    else:
+                        stop_loss = max(stop_loss, tightened_stop)
+                        risk = entry_max - stop_loss
+                        nearest_resistance_rr = (nearest_resistance - entry_ref) / risk
 
-                    stop_loss = max(stop_loss, tightened_stop)
-                    risk = entry_max - stop_loss
-                    nearest_resistance_rr = (resistance_levels[0] - entry_ref) / risk
-
-                    if risk <= 0 or nearest_resistance_rr < Config.TP1_MIN_RR:
-                        return None
+                        if risk <= 0 or nearest_resistance_rr < Config.TP1_MIN_RR:
+                            stop_loss = previous_stop_loss
+                            risk = previous_risk
+                            resistance_levels = resistance_levels[1:]
 
             tp1 = self._pick_take_profit_level("LONG", entry_ref, risk, resistance_levels, Config.TP1_MIN_RR, tp1_rr)
             tp2 = self._pick_take_profit_level("LONG", entry_ref, risk, resistance_levels, tp1_rr + 0.25, tp2_rr)
@@ -782,23 +841,28 @@ class SignalEngine:
 
             nearest_support_rr = None
             if support_levels:
-                nearest_support_rr = (entry_ref - support_levels[-1]) / risk
+                nearest_support = support_levels[-1]
+                nearest_support_rr = (entry_ref - nearest_support) / risk
                 if nearest_support_rr < Config.TP1_MIN_RR:
-                    target_distance = entry_ref - support_levels[-1]
+                    previous_stop_loss = stop_loss
+                    previous_risk = risk
+                    target_distance = entry_ref - nearest_support
                     desired_risk = target_distance / Config.TP1_MIN_RR
                     min_risk = entry_ref * 0.0025
                     min_stop_gap = max(stop_buffer * 0.25, entry_ref * 0.0005)
                     tightened_stop = max(entry_ref + desired_risk, entry_max + min_stop_gap)
 
                     if desired_risk < min_risk or tightened_stop <= entry_max:
-                        return None
+                        support_levels = support_levels[:-1]
+                    else:
+                        stop_loss = min(stop_loss, tightened_stop)
+                        risk = stop_loss - entry_min
+                        nearest_support_rr = (entry_ref - nearest_support) / risk
 
-                    stop_loss = min(stop_loss, tightened_stop)
-                    risk = stop_loss - entry_min
-                    nearest_support_rr = (entry_ref - support_levels[-1]) / risk
-
-                    if risk <= 0 or nearest_support_rr < Config.TP1_MIN_RR:
-                        return None
+                        if risk <= 0 or nearest_support_rr < Config.TP1_MIN_RR:
+                            stop_loss = previous_stop_loss
+                            risk = previous_risk
+                            support_levels = support_levels[:-1]
 
             tp1 = self._pick_take_profit_level("SHORT", entry_ref, risk, support_levels, Config.TP1_MIN_RR, tp1_rr)
             tp2 = self._pick_take_profit_level("SHORT", entry_ref, risk, support_levels, tp1_rr + 0.25, tp2_rr)
@@ -852,6 +916,171 @@ class SignalEngine:
             return "SETUP"
 
         return None
+
+    def _is_core_symbol(self, symbol: str) -> bool:
+        return symbol.upper() in set(Config.CORE_SYMBOLS)
+
+    def _detect_core_intraday_setup(
+        self,
+        symbol: str,
+        htf_df: pd.DataFrame,
+        mtf_df: pd.DataFrame,
+        ltf_df: pd.DataFrame,
+    ) -> SetupContext:
+        if Config.STRATEGY_MODE != "CORE_INTRADAY" or not self._is_core_symbol(symbol):
+            return SetupContext("NONE", "NONE", "core intraday disabled")
+
+        htf_last = self._closed(htf_df)
+        mtf_last = self._closed(mtf_df)
+        ltf_last = self._closed(ltf_df)
+        ltf_prev = self._prev_closed(ltf_df)
+
+        close = self._safe_float(ltf_last.get("close"))
+        prev_close = self._safe_float(ltf_prev.get("close"))
+        ema20 = self._safe_float(ltf_last.get("ema20"))
+        ema50 = self._safe_float(ltf_last.get("ema50"))
+        atr_ratio_value = self._safe_float(ltf_last.get("atr_ratio"))
+        ltf_adx = self._safe_float(ltf_last.get("adx"))
+        rsi = self._safe_float(ltf_last.get("rsi"), 50.0)
+        macd_hist = self._safe_float(ltf_last.get("macd_hist"))
+        prev_macd_hist = self._safe_float(ltf_prev.get("macd_hist"))
+        volume_ratio = self._safe_float(ltf_last.get("quote_volume_ratio"), 1.0)
+
+        if close <= 0 or ema20 <= 0 or ema50 <= 0:
+            return SetupContext("NONE", "NONE", "core: EMA/price данные невалидны")
+
+        if volume_ratio < Config.MIN_SETUP_VOLUME_RATIO and ltf_adx < 22:
+            return SetupContext("NONE", "NONE", "core: 15m объём слабый для входа")
+
+        if atr_ratio_value < Config.MIN_SETUP_ATR_RATIO * 0.85 and ltf_adx < 20:
+            return SetupContext("NONE", "NONE", "core: 15m волатильность слишком низкая")
+
+        htf_regime = self.regime_analyzer.detect_regime(htf_df)
+        mtf_regime = self.regime_analyzer.detect_regime(mtf_df)
+
+        long_score = (
+            self.structure_engine._direction_score(mtf_last, "LONG", Config.MIN_ADX_1H) * 1.45
+            + self.structure_engine._direction_score(htf_last, "LONG", Config.MIN_ADX_4H) * 0.85
+            + self.structure_engine._direction_score(ltf_last, "LONG", max(Config.MIN_ADX_1H - 2, 10)) * 0.65
+        )
+        short_score = (
+            self.structure_engine._direction_score(mtf_last, "SHORT", Config.MIN_ADX_1H) * 1.45
+            + self.structure_engine._direction_score(htf_last, "SHORT", Config.MIN_ADX_4H) * 0.85
+            + self.structure_engine._direction_score(ltf_last, "SHORT", max(Config.MIN_ADX_1H - 2, 10)) * 0.65
+        )
+
+        if mtf_regime.direction == "LONG":
+            long_score += 0.7
+        elif mtf_regime.direction == "SHORT":
+            short_score += 0.7
+
+        if htf_regime.direction == "LONG":
+            long_score += 0.3
+        elif htf_regime.direction == "SHORT":
+            short_score += 0.3
+
+        dist_ema20 = abs(close - ema20) / close
+        dist_ema50 = abs(close - ema50) / close
+        too_far_from_work_zone = (
+            dist_ema20 > Config.MAX_DISTANCE_FROM_EMA20
+            and dist_ema50 > Config.MAX_DISTANCE_FROM_EMA50
+        )
+
+        long_pullback_zone = close >= min(ema20, ema50) * 0.998 and close <= max(ema20, ema50) * 1.014
+        short_pullback_zone = close <= max(ema20, ema50) * 1.002 and close >= min(ema20, ema50) * 0.986
+        long_momentum = close >= prev_close or macd_hist > prev_macd_hist
+        short_momentum = close <= prev_close or macd_hist < prev_macd_hist
+
+        recent_mtf = mtf_df.iloc[-26:-2]
+        range_high = self._safe_float(recent_mtf["high"].max())
+        range_low = self._safe_float(recent_mtf["low"].min())
+        mtf_close = self._safe_float(mtf_last.get("close"))
+        ltf_low = self._safe_float(ltf_last.get("low"))
+        ltf_high = self._safe_float(ltf_last.get("high"))
+
+        long_breakout_retest = (
+            range_high > 0
+            and mtf_close > range_high
+            and ltf_low <= range_high * 1.004
+            and close >= range_high * 0.996
+        )
+        short_breakout_retest = (
+            range_low > 0
+            and mtf_close < range_low
+            and ltf_high >= range_low * 0.996
+            and close <= range_low * 1.004
+        )
+
+        htf_long_ok = htf_regime.direction in {"LONG", "NONE"} or htf_regime.is_volatility_expansion
+        htf_short_ok = htf_regime.direction in {"SHORT", "NONE"} or htf_regime.is_volatility_expansion
+        mtf_long_ok = mtf_regime.direction in {"LONG", "NONE"} or mtf_regime.is_volatility_expansion
+        mtf_short_ok = mtf_regime.direction in {"SHORT", "NONE"} or mtf_regime.is_volatility_expansion
+
+        min_score = 5.35
+        min_edge = 0.45
+
+        long_ok = (
+            htf_long_ok
+            and mtf_long_ok
+            and long_score >= min_score
+            and long_score >= short_score + min_edge
+            and 42 <= rsi <= Config.LONG_MAX_RSI_ENTRY
+            and not too_far_from_work_zone
+            and (long_momentum or long_breakout_retest)
+        )
+        short_ok = (
+            htf_short_ok
+            and mtf_short_ok
+            and short_score >= min_score
+            and short_score >= long_score + min_edge
+            and Config.SHORT_MIN_RSI_ENTRY <= rsi <= 58
+            and not too_far_from_work_zone
+            and (short_momentum or short_breakout_retest)
+        )
+
+        if long_ok:
+            if long_breakout_retest:
+                return SetupContext(
+                    "BREAKOUT_RETEST",
+                    "LONG",
+                    "core 1h breakout + 15m retest на ликвидной паре",
+                )
+
+            if long_pullback_zone:
+                return SetupContext(
+                    "PULLBACK_CONTINUATION",
+                    "LONG",
+                    "core 1h trend continuation + 15m откат в рабочую EMA-зону",
+                )
+
+            return SetupContext(
+                "MOMENTUM_CONTINUATION",
+                "LONG",
+                "core 1h directional setup + 15m momentum continuation",
+            )
+
+        if short_ok:
+            if short_breakout_retest:
+                return SetupContext(
+                    "BREAKOUT_RETEST",
+                    "SHORT",
+                    "core 1h breakdown + 15m retest на ликвидной паре",
+                )
+
+            if short_pullback_zone:
+                return SetupContext(
+                    "PULLBACK_CONTINUATION",
+                    "SHORT",
+                    "core 1h trend continuation + 15m откат в рабочую EMA-зону",
+                )
+
+            return SetupContext(
+                "MOMENTUM_CONTINUATION",
+                "SHORT",
+                "core 1h directional setup + 15m momentum continuation",
+            )
+
+        return SetupContext("NONE", "NONE", "core intraday setup не найден")
 
     def _detect_regime_momentum_setup(
         self,
@@ -915,8 +1144,8 @@ class SignalEngine:
         mtf_long_ok = mtf_regime.direction in {"LONG", "NONE"}
         mtf_short_ok = mtf_regime.direction in {"SHORT", "NONE"}
 
-        min_score = 5.0
-        min_edge = 0.25
+        min_score = 4.65
+        min_edge = 0.15
 
         if htf_long_ok and mtf_long_ok and long_momentum and long_score >= min_score and long_score >= short_score + min_edge:
             return SetupContext(
@@ -959,7 +1188,10 @@ class SignalEngine:
 
         diagnostics = self._build_diagnostics(htf_df, mtf_df, ltf_df)
 
-        setup = self._check_structure_setup(htf_df, mtf_df, ltf_df)
+        setup = self._detect_core_intraday_setup(symbol, htf_df, mtf_df, ltf_df)
+        if setup.setup_type == "NONE":
+            setup = self._check_structure_setup(htf_df, mtf_df, ltf_df)
+
         if setup.setup_type == "NONE":
             fallback_setup = self._detect_regime_momentum_setup(htf_df, mtf_df, ltf_df)
             if fallback_setup.setup_type != "NONE":

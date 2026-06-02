@@ -21,7 +21,7 @@ class Config:
     # =========================================================
     # MODE
     # =========================================================
-    STRATEGY_MODE = os.getenv("STRATEGY_MODE", "BALANCED_PRO").upper()
+    STRATEGY_MODE = os.getenv("STRATEGY_MODE", "CORE_INTRADAY").upper()
 
     # =========================================================
     # TIMEFRAMES
@@ -39,9 +39,10 @@ class Config:
     OPEN_TRADE_MONITOR_INTERVAL_SECONDS = int(os.getenv("OPEN_TRADE_MONITOR_INTERVAL_SECONDS", "2"))
     MAX_SIGNALS_PER_SCAN = int(os.getenv("MAX_SIGNALS_PER_SCAN", "5"))
 
-    USE_PRIORITY_SYMBOLS_ONLY = os.getenv("USE_PRIORITY_SYMBOLS_ONLY", "false").lower() == "true"
-    MAX_SYMBOLS_TO_SCAN = int(os.getenv("MAX_SYMBOLS_TO_SCAN", "100"))
-    AUTO_WHITELIST_ENABLED = os.getenv("AUTO_WHITELIST_ENABLED", "true").lower() == "true"
+    CORE_SYMBOLS_ONLY = os.getenv("CORE_SYMBOLS_ONLY", "true").lower() == "true"
+    USE_PRIORITY_SYMBOLS_ONLY = os.getenv("USE_PRIORITY_SYMBOLS_ONLY", "true").lower() == "true"
+    MAX_SYMBOLS_TO_SCAN = int(os.getenv("MAX_SYMBOLS_TO_SCAN", "5"))
+    AUTO_WHITELIST_ENABLED = os.getenv("AUTO_WHITELIST_ENABLED", "false").lower() == "true"
     AUTO_WHITELIST_SIZE = int(os.getenv("AUTO_WHITELIST_SIZE", "20"))
     AUTO_WHITELIST_MIN_CLOSED_TRADES = int(os.getenv("AUTO_WHITELIST_MIN_CLOSED_TRADES", "3"))
     AUTO_WHITELIST_MIN_EXPECTANCY = float(os.getenv("AUTO_WHITELIST_MIN_EXPECTANCY", "0.0"))
@@ -56,11 +57,20 @@ class Config:
     BTC_HARD_FILTER_ENABLED = os.getenv("BTC_HARD_FILTER_ENABLED", "false").lower() == "true"
     BTC_COUNTER_TREND_PENALTY = float(os.getenv("BTC_COUNTER_TREND_PENALTY", "0.7"))
 
-    PRIORITY_SYMBOLS = [
-        "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-        "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
-        "DOTUSDT", "NEARUSDT", "ARBUSDT", "OPUSDT", "ATOMUSDT",
-    ]
+    STRATEGY_POLICY_ENABLED = os.getenv("STRATEGY_POLICY_ENABLED", "true").lower() == "true"
+    POLICY_MAX_SESSION_LOSS_R = float(os.getenv("POLICY_MAX_SESSION_LOSS_R", "4.0"))
+    POLICY_MAX_DRAWDOWN_R = float(os.getenv("POLICY_MAX_DRAWDOWN_R", "5.0"))
+    POLICY_MIN_TRADES_FOR_EDGE = int(os.getenv("POLICY_MIN_TRADES_FOR_EDGE", "12"))
+    POLICY_MIN_EXPECTANCY_R = float(os.getenv("POLICY_MIN_EXPECTANCY_R", "-0.05"))
+    POLICY_MIN_PROFIT_FACTOR = float(os.getenv("POLICY_MIN_PROFIT_FACTOR", "0.85"))
+    POLICY_MAX_SAME_DIRECTION_OPEN = int(os.getenv("POLICY_MAX_SAME_DIRECTION_OPEN", "3"))
+    POLICY_SETUP_RISK_MULTIPLIER = float(os.getenv("POLICY_SETUP_RISK_MULTIPLIER", "0.65"))
+    POLICY_COUNTER_BTC_RISK_MULTIPLIER = float(os.getenv("POLICY_COUNTER_BTC_RISK_MULTIPLIER", "0.45"))
+    POLICY_MEME_RISK_MULTIPLIER = float(os.getenv("POLICY_MEME_RISK_MULTIPLIER", "0.70"))
+    POLICY_MIN_RISK_MULTIPLIER = float(os.getenv("POLICY_MIN_RISK_MULTIPLIER", "0.25"))
+
+    CORE_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
+    PRIORITY_SYMBOLS = CORE_SYMBOLS.copy()
     DEFAULT_SYMBOLS = PRIORITY_SYMBOLS.copy()
 
     # =========================================================
@@ -80,7 +90,7 @@ class Config:
     MIN_24H_QUOTE_VOLUME = float(os.getenv("MIN_24H_QUOTE_VOLUME", "30000000"))
     MIN_24H_TRADES = int(os.getenv("MIN_24H_TRADES", "30000"))
 
-    SIGNAL_COOLDOWN_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "180"))
+    SIGNAL_COOLDOWN_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "60"))
     SETUP_PRICE_TOLERANCE = float(os.getenv("SETUP_PRICE_TOLERANCE", "0.0035"))
 
     # =========================================================
@@ -133,10 +143,10 @@ class Config:
     STRONG_MIN_SCORE = float(os.getenv("STRONG_MIN_SCORE", "6.6"))
     STRONG_MIN_RR = float(os.getenv("STRONG_MIN_RR", "1.15"))
 
-    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.45"))
-    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.0"))
+    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.8"))
+    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.12"))
     MIN_SETUP_ATR_RATIO = float(os.getenv("MIN_SETUP_ATR_RATIO", "0.0024"))
-    MIN_SETUP_VOLUME_RATIO = float(os.getenv("MIN_SETUP_VOLUME_RATIO", "0.45"))
+    MIN_SETUP_VOLUME_RATIO = float(os.getenv("MIN_SETUP_VOLUME_RATIO", "0.55"))
     MAX_ENTRY_ZONE_ATR = float(os.getenv("MAX_ENTRY_ZONE_ATR", "0.45"))
     MAX_ENTRY_ZONE_PCT = float(os.getenv("MAX_ENTRY_ZONE_PCT", "0.006"))
 
@@ -158,6 +168,18 @@ class Config:
         MIN_SUPPORT_GAP = float(os.getenv("MIN_SUPPORT_GAP", "0.006"))
 
         MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO = float(os.getenv("MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO", "0.78"))
+    elif STRATEGY_MODE == "CORE_INTRADAY":
+        MIN_ADX_4H = float(os.getenv("MIN_ADX_4H", "13.0"))
+        MIN_ADX_1H = float(os.getenv("MIN_ADX_1H", "14.0"))
+        MIN_ATR_RATIO_15M = float(os.getenv("MIN_ATR_RATIO_15M", "0.0022"))
+
+        MAX_DISTANCE_FROM_EMA20 = float(os.getenv("MAX_DISTANCE_FROM_EMA20", "0.018"))
+        MAX_DISTANCE_FROM_EMA50 = float(os.getenv("MAX_DISTANCE_FROM_EMA50", "0.030"))
+
+        MIN_RESISTANCE_GAP = float(os.getenv("MIN_RESISTANCE_GAP", "0.004"))
+        MIN_SUPPORT_GAP = float(os.getenv("MIN_SUPPORT_GAP", "0.004"))
+
+        MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO = float(os.getenv("MIN_ACCEPTABLE_QUOTE_VOLUME_RATIO", "0.65"))
     else:
         # BALANCED_PRO / default
         MIN_ADX_4H = float(os.getenv("MIN_ADX_4H", "15.0"))
