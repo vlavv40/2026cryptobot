@@ -43,10 +43,11 @@ async def verify_telegram_polling_owner(bot: Bot):
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.get_updates(timeout=0, allowed_updates=[])
     except TelegramConflictError as error:
-        raise RuntimeError(
+        logger.warning(
             "Telegram polling conflict: где-то уже запущен бот с этим BOT_TOKEN. "
-            "Останови второй сервис/локальный процесс или перевыпусти токен в BotFather."
-        ) from error
+            "Сканер продолжит работать, но Telegram-команды могут конфликтовать. "
+            f"Details: {error}"
+        )
 
 
 async def auto_scan_loop(bot: Bot, scanner: MarketScanner):

@@ -509,6 +509,7 @@ class MarketScanner:
             ("ResGap", "resistance_gap"),
             ("SupGap", "support_gap"),
             ("BTC", "btc_bias"),
+            ("Dir", "direction"),
             ("Setup", "setup_type"),
             ("HTF", "htf_regime"),
             ("Liq", "liquidity_profile"),

@@ -13,7 +13,7 @@ from services.indicators import (
     add_support_resistance,
     atr_ratio,
 )
-from services.structure_engine import StructureEngine
+from services.structure_engine import SetupContext, StructureEngine
 from services.market_regime import MarketRegimeAnalyzer
 
 
@@ -309,6 +309,8 @@ class SignalEngine:
             if adx >= 22:
                 min_atr_ratio = min(min_atr_ratio, Config.MIN_SETUP_ATR_RATIO * 0.85)
             min_volume_ratio = min(min_volume_ratio, Config.MIN_SETUP_VOLUME_RATIO)
+            if adx >= 24:
+                min_volume_ratio = min(min_volume_ratio, 0.35)
 
         if atr_ratio_value < min_atr_ratio:
             return False, "15m слишком вялый"
@@ -641,7 +643,11 @@ class SignalEngine:
 
         if direction == "LONG":
             anchor = min(close, ema20, ema50)
-            entry_min = anchor * 0.999
+            entry_min = max(
+                anchor * 0.999,
+                close - atr * Config.MAX_ENTRY_ZONE_ATR,
+                close * (1 - Config.MAX_ENTRY_ZONE_PCT),
+            )
             entry_max = close * 1.001
             entry_ref = entry_max
 
@@ -681,9 +687,8 @@ class SignalEngine:
 
             if pd.notna(resistance):
                 resistance_val = float(resistance)
-                if resistance_val <= entry_max:
-                    return None
-                resistance_levels.append(resistance_val)
+                if resistance_val > entry_ref:
+                    resistance_levels.append(resistance_val)
 
             resistance_levels = self._dedupe_levels(
                 [x for x in resistance_levels if x > entry_ref],
@@ -694,7 +699,21 @@ class SignalEngine:
             if resistance_levels:
                 nearest_resistance_rr = (resistance_levels[0] - entry_ref) / risk
                 if nearest_resistance_rr < Config.TP1_MIN_RR:
-                    return None
+                    target_distance = resistance_levels[0] - entry_ref
+                    desired_risk = target_distance / Config.TP1_MIN_RR
+                    min_risk = entry_ref * 0.0025
+                    min_stop_gap = max(stop_buffer * 0.25, entry_ref * 0.0005)
+                    tightened_stop = min(entry_ref - desired_risk, entry_min - min_stop_gap)
+
+                    if desired_risk < min_risk or tightened_stop >= entry_min:
+                        return None
+
+                    stop_loss = max(stop_loss, tightened_stop)
+                    risk = entry_max - stop_loss
+                    nearest_resistance_rr = (resistance_levels[0] - entry_ref) / risk
+
+                    if risk <= 0 or nearest_resistance_rr < Config.TP1_MIN_RR:
+                        return None
 
             tp1 = self._pick_take_profit_level("LONG", entry_ref, risk, resistance_levels, Config.TP1_MIN_RR, tp1_rr)
             tp2 = self._pick_take_profit_level("LONG", entry_ref, risk, resistance_levels, tp1_rr + 0.25, tp2_rr)
@@ -710,7 +729,11 @@ class SignalEngine:
         else:
             anchor = max(close, ema20, ema50)
             entry_min = close * 0.999
-            entry_max = anchor * 1.001
+            entry_max = min(
+                anchor * 1.001,
+                close + atr * Config.MAX_ENTRY_ZONE_ATR,
+                close * (1 + Config.MAX_ENTRY_ZONE_PCT),
+            )
             entry_ref = entry_min
 
             structure = self._recent_structure_levels(ltf_df, entry_ref, atr)
@@ -749,9 +772,8 @@ class SignalEngine:
 
             if pd.notna(support):
                 support_val = float(support)
-                if support_val >= entry_min:
-                    return None
-                support_levels.append(support_val)
+                if support_val < entry_ref:
+                    support_levels.append(support_val)
 
             support_levels = self._dedupe_levels(
                 [x for x in support_levels if x < entry_ref],
@@ -762,7 +784,21 @@ class SignalEngine:
             if support_levels:
                 nearest_support_rr = (entry_ref - support_levels[-1]) / risk
                 if nearest_support_rr < Config.TP1_MIN_RR:
-                    return None
+                    target_distance = entry_ref - support_levels[-1]
+                    desired_risk = target_distance / Config.TP1_MIN_RR
+                    min_risk = entry_ref * 0.0025
+                    min_stop_gap = max(stop_buffer * 0.25, entry_ref * 0.0005)
+                    tightened_stop = max(entry_ref + desired_risk, entry_max + min_stop_gap)
+
+                    if desired_risk < min_risk or tightened_stop <= entry_max:
+                        return None
+
+                    stop_loss = min(stop_loss, tightened_stop)
+                    risk = stop_loss - entry_min
+                    nearest_support_rr = (entry_ref - support_levels[-1]) / risk
+
+                    if risk <= 0 or nearest_support_rr < Config.TP1_MIN_RR:
+                        return None
 
             tp1 = self._pick_take_profit_level("SHORT", entry_ref, risk, support_levels, Config.TP1_MIN_RR, tp1_rr)
             tp2 = self._pick_take_profit_level("SHORT", entry_ref, risk, support_levels, tp1_rr + 0.25, tp2_rr)
@@ -817,6 +853,87 @@ class SignalEngine:
 
         return None
 
+    def _detect_regime_momentum_setup(
+        self,
+        htf_df: pd.DataFrame,
+        mtf_df: pd.DataFrame,
+        ltf_df: pd.DataFrame,
+    ) -> SetupContext:
+        if Config.STRATEGY_MODE == "SNIPER":
+            return SetupContext("NONE", "NONE", "regime momentum fallback disabled in SNIPER")
+
+        htf_last = self._closed(htf_df)
+        mtf_last = self._closed(mtf_df)
+        ltf_last = self._closed(ltf_df)
+        ltf_prev = self._prev_closed(ltf_df)
+
+        volume_ratio = self._safe_float(ltf_last.get("quote_volume_ratio"), 1.0)
+        atr_ratio_value = self._safe_float(ltf_last.get("atr_ratio"))
+        ltf_adx = self._safe_float(ltf_last.get("adx"))
+
+        min_volume_ratio = Config.MIN_SETUP_VOLUME_RATIO
+        if ltf_adx >= 24:
+            min_volume_ratio = min(min_volume_ratio, 0.35)
+
+        if volume_ratio < min_volume_ratio:
+            return SetupContext("NONE", "NONE", "regime momentum fallback: слабый 15m volume")
+
+        if atr_ratio_value < Config.MIN_SETUP_ATR_RATIO and ltf_adx < 22:
+            return SetupContext("NONE", "NONE", "regime momentum fallback: слабый 15m ATR")
+
+        htf_regime = self.regime_analyzer.detect_regime(htf_df)
+        mtf_regime = self.regime_analyzer.detect_regime(mtf_df)
+
+        long_score = (
+            self.structure_engine._direction_score(htf_last, "LONG", Config.MIN_ADX_4H) * 1.15
+            + self.structure_engine._direction_score(mtf_last, "LONG", Config.MIN_ADX_1H)
+            + self.structure_engine._direction_score(ltf_last, "LONG", max(Config.MIN_ADX_1H - 2, 10))
+        )
+        short_score = (
+            self.structure_engine._direction_score(htf_last, "SHORT", Config.MIN_ADX_4H) * 1.15
+            + self.structure_engine._direction_score(mtf_last, "SHORT", Config.MIN_ADX_1H)
+            + self.structure_engine._direction_score(ltf_last, "SHORT", max(Config.MIN_ADX_1H - 2, 10))
+        )
+
+        close = self._safe_float(ltf_last.get("close"))
+        prev_close = self._safe_float(ltf_prev.get("close"))
+        rsi = self._safe_float(ltf_last.get("rsi"), 50.0)
+        macd_hist = self._safe_float(ltf_last.get("macd_hist"))
+        prev_macd_hist = self._safe_float(ltf_prev.get("macd_hist"))
+
+        long_momentum = (
+            (close > prev_close or macd_hist > prev_macd_hist)
+            and 42 <= rsi <= Config.LONG_MAX_RSI_ENTRY
+        )
+        short_momentum = (
+            (close < prev_close or macd_hist < prev_macd_hist)
+            and Config.SHORT_MIN_RSI_ENTRY <= rsi <= 58
+        )
+
+        htf_long_ok = htf_regime.direction in {"LONG", "NONE"} or htf_regime.is_volatility_expansion
+        htf_short_ok = htf_regime.direction in {"SHORT", "NONE"} or htf_regime.is_volatility_expansion
+        mtf_long_ok = mtf_regime.direction in {"LONG", "NONE"}
+        mtf_short_ok = mtf_regime.direction in {"SHORT", "NONE"}
+
+        min_score = 5.0
+        min_edge = 0.25
+
+        if htf_long_ok and mtf_long_ok and long_momentum and long_score >= min_score and long_score >= short_score + min_edge:
+            return SetupContext(
+                "MOMENTUM_CONTINUATION",
+                "LONG",
+                "fallback: regime/momentum setup LONG без классической swing-структуры",
+            )
+
+        if htf_short_ok and mtf_short_ok and short_momentum and short_score >= min_score and short_score >= long_score + min_edge:
+            return SetupContext(
+                "MOMENTUM_CONTINUATION",
+                "SHORT",
+                "fallback: regime/momentum setup SHORT без классической swing-структуры",
+            )
+
+        return SetupContext("NONE", "NONE", "regime momentum fallback не найден")
+
     # =========================================================
     # MAIN ANALYZE
     # =========================================================
@@ -844,12 +961,20 @@ class SignalEngine:
 
         setup = self._check_structure_setup(htf_df, mtf_df, ltf_df)
         if setup.setup_type == "NONE":
+            fallback_setup = self._detect_regime_momentum_setup(htf_df, mtf_df, ltf_df)
+            if fallback_setup.setup_type != "NONE":
+                setup = fallback_setup
+
+        if setup.setup_type == "NONE":
             return SignalCheckResult(
                 symbol=symbol,
                 signal=None,
                 skip_reason=setup.reason,
                 diagnostics=diagnostics,
             )
+
+        diagnostics["setup_type"] = setup.setup_type
+        diagnostics["direction"] = setup.direction
 
         regime_ok, regime_reason, regime_diag = self._check_regime_filters(
             setup.direction,
@@ -905,6 +1030,7 @@ class SignalEngine:
         diagnostics["rr"] = round(float(levels["rr"]), 3)
         diagnostics["score"] = round(float(score), 3)
         diagnostics["setup_type"] = setup.setup_type
+        diagnostics["direction"] = setup.direction
         diagnostics["liquidity_profile"] = levels.get("liquidity_profile")
         diagnostics["risk_pct"] = round(float(levels.get("risk_pct", 0.0)), 5)
 

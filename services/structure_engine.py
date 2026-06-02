@@ -359,7 +359,11 @@ class StructureEngine:
         adx = self._safe_float(ltf_last.get("adx"))
         volume_ratio = self._safe_float(ltf_last.get("quote_volume_ratio"), 1.0)
 
-        if volume_ratio < Config.MIN_SETUP_VOLUME_RATIO:
+        min_volume_ratio = Config.MIN_SETUP_VOLUME_RATIO
+        if adx >= 28 or abs(macd_hist - prev_macd_hist) > 0:
+            min_volume_ratio = min(min_volume_ratio, 0.35)
+
+        if volume_ratio < min_volume_ratio:
             return SetupContext("NONE", "NONE", "adaptive continuation: слабый 15m volume")
 
         if atr_ratio < Config.MIN_SETUP_ATR_RATIO and adx < 22:
@@ -385,14 +389,17 @@ class StructureEngine:
             and Config.SHORT_MIN_RSI_ENTRY <= rsi <= 58
         )
 
-        if long_score >= 6.1 and long_score >= short_score + 0.9 and long_momentum:
+        min_direction_score = 5.25
+        min_score_edge = 0.45
+
+        if long_score >= min_direction_score and long_score >= short_score + min_score_edge and long_momentum:
             return SetupContext(
                 setup_type="MOMENTUM_CONTINUATION",
                 direction="LONG",
                 reason="адаптивный trend/momentum continuation: EMA/ADX/MACD согласованы",
             )
 
-        if short_score >= 6.1 and short_score >= long_score + 0.9 and short_momentum:
+        if short_score >= min_direction_score and short_score >= long_score + min_score_edge and short_momentum:
             return SetupContext(
                 setup_type="MOMENTUM_CONTINUATION",
                 direction="SHORT",

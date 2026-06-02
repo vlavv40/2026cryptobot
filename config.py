@@ -53,7 +53,7 @@ class Config:
     SIDE_QUALITY_MIN_CLOSED_TRADES = int(os.getenv("SIDE_QUALITY_MIN_CLOSED_TRADES", "8"))
     SIDE_QUALITY_MIN_EXPECTANCY = float(os.getenv("SIDE_QUALITY_MIN_EXPECTANCY", "-0.10"))
     SIDE_QUALITY_MAX_STOP_RATE = float(os.getenv("SIDE_QUALITY_MAX_STOP_RATE", "65"))
-    BTC_HARD_FILTER_ENABLED = os.getenv("BTC_HARD_FILTER_ENABLED", "true").lower() == "true"
+    BTC_HARD_FILTER_ENABLED = os.getenv("BTC_HARD_FILTER_ENABLED", "false").lower() == "true"
     BTC_COUNTER_TREND_PENALTY = float(os.getenv("BTC_COUNTER_TREND_PENALTY", "0.7"))
 
     PRIORITY_SYMBOLS = [
@@ -133,10 +133,12 @@ class Config:
     STRONG_MIN_SCORE = float(os.getenv("STRONG_MIN_SCORE", "6.6"))
     STRONG_MIN_RR = float(os.getenv("STRONG_MIN_RR", "1.15"))
 
-    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.9"))
-    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.05"))
+    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.45"))
+    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.0"))
     MIN_SETUP_ATR_RATIO = float(os.getenv("MIN_SETUP_ATR_RATIO", "0.0024"))
     MIN_SETUP_VOLUME_RATIO = float(os.getenv("MIN_SETUP_VOLUME_RATIO", "0.45"))
+    MAX_ENTRY_ZONE_ATR = float(os.getenv("MAX_ENTRY_ZONE_ATR", "0.45"))
+    MAX_ENTRY_ZONE_PCT = float(os.getenv("MAX_ENTRY_ZONE_PCT", "0.006"))
 
     MIN_SCORE = STRONG_MIN_SCORE
     MIN_RR = STRONG_MIN_RR
