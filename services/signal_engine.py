@@ -904,6 +904,160 @@ class SignalEngine:
             "risk_pct": risk_pct,
         }
 
+    def _core_structure_levels(self, mtf_df: pd.DataFrame, entry_ref: float, atr: float) -> dict:
+        window = mtf_df.iloc[-54:-2].copy()
+        tolerance = max(atr * 0.18, entry_ref * 0.0015)
+
+        supports = []
+        resistances = []
+
+        if len(window) >= 12:
+            lows = [float(x) for x in window["low"].dropna().tolist()]
+            highs = [float(x) for x in window["high"].dropna().tolist()]
+
+            supports.extend([x for x in lows if x < entry_ref])
+            resistances.extend([x for x in highs if x > entry_ref])
+
+            rolling_low = window["low"].rolling(window=8).min().dropna()
+            rolling_high = window["high"].rolling(window=8).max().dropna()
+
+            supports.extend([float(x) for x in rolling_low.tolist() if float(x) < entry_ref])
+            resistances.extend([float(x) for x in rolling_high.tolist() if float(x) > entry_ref])
+
+        return {
+            "supports": self._dedupe_levels(supports, tolerance),
+            "resistances": self._dedupe_levels(resistances, tolerance),
+        }
+
+    def build_core_trade_levels(
+        self,
+        symbol: str,
+        direction: str,
+        mtf_df: pd.DataFrame,
+        ltf_df: pd.DataFrame,
+    ):
+        mtf_last = self._closed(mtf_df)
+        ltf_last = self._closed(ltf_df)
+
+        mtf_atr = self._safe_float(mtf_last.get("atr"))
+        ltf_atr = self._safe_float(ltf_last.get("atr"))
+        close = self._safe_float(ltf_last.get("close"))
+        ema20 = self._safe_float(ltf_last.get("ema20"))
+        ema50 = self._safe_float(ltf_last.get("ema50"))
+
+        if mtf_atr <= 0 or ltf_atr <= 0 or close <= 0 or ema20 <= 0 or ema50 <= 0:
+            return None
+
+        stop_buffer = mtf_atr * Config.CORE_STOP_BUFFER_ATR_1H
+        min_stop_distance = mtf_atr * Config.CORE_MIN_STOP_ATR_1H
+        max_stop_distance = min(
+            mtf_atr * Config.CORE_MAX_STOP_ATR_1H,
+            close * Config.CORE_MAX_STOP_PCT,
+        )
+        if max_stop_distance < min_stop_distance:
+            max_stop_distance = min_stop_distance
+
+        if direction == "LONG":
+            anchor = min(close, ema20, ema50)
+            entry_min = max(
+                anchor * 0.999,
+                close - ltf_atr * Config.MAX_ENTRY_ZONE_ATR,
+                close * (1 - Config.MAX_ENTRY_ZONE_PCT),
+            )
+            entry_max = close * 1.001
+            entry_ref = entry_max
+
+            structure = self._core_structure_levels(mtf_df, entry_ref, mtf_atr)
+            stop_candidates = [
+                entry_ref - max_stop_distance,
+                entry_ref - min_stop_distance,
+                self._safe_float(mtf_last.get("ema50")) - stop_buffer,
+            ]
+
+            if structure["supports"]:
+                stop_candidates.append(max(structure["supports"]) - stop_buffer)
+
+            stop_candidates = [x for x in stop_candidates if x > 0 and x < entry_min]
+            if not stop_candidates:
+                stop_candidates = [entry_ref - max_stop_distance]
+
+            stop_loss = min(stop_candidates)
+            stop_loss = min(stop_loss, entry_min - stop_buffer * 0.35)
+            stop_loss = max(stop_loss, entry_ref - max_stop_distance)
+            stop_loss = min(stop_loss, entry_ref - min_stop_distance)
+
+            if stop_loss >= entry_min:
+                return None
+
+            risk = entry_ref - stop_loss
+            tp1 = entry_ref + risk * Config.CORE_TP1_RR
+            tp2 = entry_ref + risk * Config.CORE_TP2_RR
+            tp3 = entry_ref + risk * Config.CORE_TP3_RR
+            rr = (tp1 - entry_ref) / risk
+
+        else:
+            anchor = max(close, ema20, ema50)
+            entry_min = close * 0.999
+            entry_max = min(
+                anchor * 1.001,
+                close + ltf_atr * Config.MAX_ENTRY_ZONE_ATR,
+                close * (1 + Config.MAX_ENTRY_ZONE_PCT),
+            )
+            entry_ref = entry_min
+
+            structure = self._core_structure_levels(mtf_df, entry_ref, mtf_atr)
+            stop_candidates = [
+                entry_ref + max_stop_distance,
+                entry_ref + min_stop_distance,
+                self._safe_float(mtf_last.get("ema50")) + stop_buffer,
+            ]
+
+            if structure["resistances"]:
+                stop_candidates.append(min(structure["resistances"]) + stop_buffer)
+
+            stop_candidates = [x for x in stop_candidates if x > entry_max]
+            if not stop_candidates:
+                stop_candidates = [entry_ref + max_stop_distance]
+
+            stop_loss = max(stop_candidates)
+            stop_loss = max(stop_loss, entry_max + stop_buffer * 0.35)
+            stop_loss = min(stop_loss, entry_ref + max_stop_distance)
+            stop_loss = max(stop_loss, entry_ref + min_stop_distance)
+
+            if stop_loss <= entry_max:
+                return None
+
+            risk = stop_loss - entry_ref
+            tp1 = entry_ref - risk * Config.CORE_TP1_RR
+            tp2 = entry_ref - risk * Config.CORE_TP2_RR
+            tp3 = entry_ref - risk * Config.CORE_TP3_RR
+            rr = (entry_ref - tp1) / risk
+
+        if risk <= 0:
+            return None
+
+        risk_pct = abs(entry_ref - stop_loss) / entry_ref
+        tp1_distance_pct = abs(tp1 - entry_ref) / entry_ref
+
+        if risk_pct < 0.0035:
+            return None
+
+        if tp1_distance_pct < Config.CORE_MIN_TP1_DISTANCE_PCT:
+            return None
+
+        return {
+            "entry_min": entry_min,
+            "entry_max": entry_max,
+            "stop_loss": stop_loss,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "rr": rr,
+            "liquidity_profile": "CORE",
+            "risk_pct": risk_pct,
+            "level_model": "CORE_1H_ATR",
+        }
+
     # =========================================================
     # CLASSIFY
     # =========================================================
@@ -1016,8 +1170,8 @@ class SignalEngine:
         mtf_long_ok = mtf_regime.direction in {"LONG", "NONE"} or mtf_regime.is_volatility_expansion
         mtf_short_ok = mtf_regime.direction in {"SHORT", "NONE"} or mtf_regime.is_volatility_expansion
 
-        min_score = 5.35
-        min_edge = 0.45
+        min_score = 5.05
+        min_edge = 0.30
 
         long_ok = (
             htf_long_ok
@@ -1250,7 +1404,11 @@ class SignalEngine:
         )
         reasons.insert(0, setup.reason)
 
-        levels = self.build_trade_levels(symbol, setup.direction, ltf_df)
+        if Config.STRATEGY_MODE == "CORE_INTRADAY" and self._is_core_symbol(symbol):
+            levels = self.build_core_trade_levels(symbol, setup.direction, mtf_df, ltf_df)
+        else:
+            levels = self.build_trade_levels(symbol, setup.direction, ltf_df)
+
         if not levels:
             return SignalCheckResult(
                 symbol=symbol,
@@ -1265,6 +1423,7 @@ class SignalEngine:
         diagnostics["direction"] = setup.direction
         diagnostics["liquidity_profile"] = levels.get("liquidity_profile")
         diagnostics["risk_pct"] = round(float(levels.get("risk_pct", 0.0)), 5)
+        diagnostics["level_model"] = levels.get("level_model")
 
         signal_type = self.classify_signal(score, levels["rr"])
         if not signal_type:

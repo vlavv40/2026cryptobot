@@ -90,7 +90,7 @@ class Config:
     MIN_24H_QUOTE_VOLUME = float(os.getenv("MIN_24H_QUOTE_VOLUME", "30000000"))
     MIN_24H_TRADES = int(os.getenv("MIN_24H_TRADES", "30000"))
 
-    SIGNAL_COOLDOWN_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "60"))
+    SIGNAL_COOLDOWN_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "35"))
     SETUP_PRICE_TOLERANCE = float(os.getenv("SETUP_PRICE_TOLERANCE", "0.0035"))
 
     # =========================================================
@@ -143,12 +143,20 @@ class Config:
     STRONG_MIN_SCORE = float(os.getenv("STRONG_MIN_SCORE", "6.6"))
     STRONG_MIN_RR = float(os.getenv("STRONG_MIN_RR", "1.15"))
 
-    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.8"))
-    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.12"))
+    SETUP_MIN_SCORE = float(os.getenv("SETUP_MIN_SCORE", "5.6"))
+    SETUP_MIN_RR = float(os.getenv("SETUP_MIN_RR", "1.18"))
     MIN_SETUP_ATR_RATIO = float(os.getenv("MIN_SETUP_ATR_RATIO", "0.0024"))
-    MIN_SETUP_VOLUME_RATIO = float(os.getenv("MIN_SETUP_VOLUME_RATIO", "0.55"))
+    MIN_SETUP_VOLUME_RATIO = float(os.getenv("MIN_SETUP_VOLUME_RATIO", "0.45"))
     MAX_ENTRY_ZONE_ATR = float(os.getenv("MAX_ENTRY_ZONE_ATR", "0.45"))
     MAX_ENTRY_ZONE_PCT = float(os.getenv("MAX_ENTRY_ZONE_PCT", "0.006"))
+    CORE_MIN_STOP_ATR_1H = float(os.getenv("CORE_MIN_STOP_ATR_1H", "0.55"))
+    CORE_MAX_STOP_ATR_1H = float(os.getenv("CORE_MAX_STOP_ATR_1H", "1.35"))
+    CORE_STOP_BUFFER_ATR_1H = float(os.getenv("CORE_STOP_BUFFER_ATR_1H", "0.16"))
+    CORE_MAX_STOP_PCT = float(os.getenv("CORE_MAX_STOP_PCT", "0.018"))
+    CORE_TP1_RR = float(os.getenv("CORE_TP1_RR", "1.35"))
+    CORE_TP2_RR = float(os.getenv("CORE_TP2_RR", "2.15"))
+    CORE_TP3_RR = float(os.getenv("CORE_TP3_RR", "3.20"))
+    CORE_MIN_TP1_DISTANCE_PCT = float(os.getenv("CORE_MIN_TP1_DISTANCE_PCT", "0.005"))
 
     MIN_SCORE = STRONG_MIN_SCORE
     MIN_RR = STRONG_MIN_RR
