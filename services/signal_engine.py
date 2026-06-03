@@ -249,6 +249,12 @@ class SignalEngine:
         atr = float(last["atr"]) if pd.notna(last["atr"]) else 0.0
         resistance = last["resistance"]
         support = last["support"]
+        rsi = self._safe_float(last.get("rsi"), 50.0)
+        macd = self._safe_float(last.get("macd"))
+        macd_signal = self._safe_float(last.get("macd_signal"))
+        macd_hist = self._safe_float(last.get("macd_hist"))
+        quote_volume_ratio = self._safe_float(last.get("quote_volume_ratio"), 1.0)
+        core_mode = Config.STRATEGY_MODE == "CORE_INTRADAY"
 
         if atr <= 0:
             return False, "entry quality: ATR невалиден"
@@ -271,9 +277,18 @@ class SignalEngine:
             return False, "entry quality: вход в слишком импульсную свечу"
 
         if direction == "LONG":
+            core_long_context = (
+                core_mode
+                and last_close >= min(ema20, ema50) * 0.998
+                and (macd_hist >= 0 or macd >= macd_signal)
+                and rsi >= 45
+                and quote_volume_ratio >= 0.55
+            )
+
             if (
                 last_candle["upper_wick_ratio"] >= Config.MAX_BAD_WICK_RATIO
                 and last_candle["body_ratio"] <= 0.55
+                and not core_long_context
             ):
                 return False, "entry quality: сильный верхний фитиль, продавец давит LONG"
 
@@ -284,18 +299,28 @@ class SignalEngine:
                     prev_candle["is_bull"]
                     and float(last["low"]) >= min(float(prev["open"]), float(prev["close"]))
                 )
+                or core_long_context
             ):
                 return False, "entry quality: нет нормального подтверждения покупателей"
 
             if pd.notna(resistance):
                 resistance_gap = (float(resistance) - last_close) / last_close
-                if resistance_gap < Config.HARD_MIN_RESISTANCE_GAP:
+                if resistance_gap < Config.HARD_MIN_RESISTANCE_GAP and not core_long_context:
                     return False, "entry quality: слишком близко сопротивление"
 
         else:
+            core_short_context = (
+                core_mode
+                and last_close <= max(ema20, ema50) * 1.002
+                and (macd_hist <= 0 or macd <= macd_signal)
+                and rsi <= 55
+                and quote_volume_ratio >= 0.55
+            )
+
             if (
                 last_candle["lower_wick_ratio"] >= Config.MAX_BAD_WICK_RATIO
                 and last_candle["body_ratio"] <= 0.55
+                and not core_short_context
             ):
                 return False, "entry quality: сильный нижний фитиль, покупатель давит SHORT"
 
@@ -306,12 +331,13 @@ class SignalEngine:
                     prev_candle["is_bear"]
                     and float(last["high"]) <= max(float(prev["open"]), float(prev["close"]))
                 )
+                or core_short_context
             ):
                 return False, "entry quality: нет нормального подтверждения продавцов"
 
             if pd.notna(support):
                 support_gap = (last_close - float(support)) / last_close
-                if support_gap < Config.HARD_MIN_SUPPORT_GAP:
+                if support_gap < Config.HARD_MIN_SUPPORT_GAP and not core_short_context:
                     return False, "entry quality: слишком близко поддержка"
 
         return True, ""

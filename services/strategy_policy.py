@@ -94,15 +94,22 @@ class StrategyPolicy:
 
         total_r = self._safe_float(context.paper_stats.get("total_r"))
         max_drawdown = self._safe_float(context.paper_stats.get("max_drawdown"))
+        closed_trades = self._safe_int(context.paper_stats.get("closed_trades"))
 
-        if total_r <= -abs(Config.POLICY_MAX_SESSION_LOSS_R):
+        if (
+            closed_trades >= Config.POLICY_MIN_TRADES_FOR_EDGE
+            and total_r <= -abs(Config.POLICY_MAX_SESSION_LOSS_R)
+        ):
             return StrategyDecision(
                 False,
                 f"strategy policy: risk-off, session loss {total_r:.2f}R",
                 tags=["RISK_OFF"],
             )
 
-        if max_drawdown >= abs(Config.POLICY_MAX_DRAWDOWN_R):
+        if (
+            closed_trades >= Config.POLICY_MIN_TRADES_FOR_EDGE
+            and max_drawdown >= abs(Config.POLICY_MAX_DRAWDOWN_R)
+        ):
             return StrategyDecision(
                 False,
                 f"strategy policy: risk-off, drawdown {max_drawdown:.2f}R",
