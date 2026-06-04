@@ -9,11 +9,14 @@ def get_main_menu():
                 KeyboardButton(text="📈 Позиции"),
             ],
             [
+                KeyboardButton(text="🎯 Результаты"),
                 KeyboardButton(text="💵 Финансы"),
-                KeyboardButton(text="🛡 Риск"),
             ],
             [
+                KeyboardButton(text="🛡 Риск"),
                 KeyboardButton(text="📜 Журнал"),
+            ],
+            [
                 KeyboardButton(text="⚙️ Система"),
             ],
         ],
@@ -27,14 +30,17 @@ def get_stats_menu():
         keyboard=[
             [
                 KeyboardButton(text="📊 Сводка"),
+                KeyboardButton(text="🎯 Результаты"),
+            ],
+            [
                 KeyboardButton(text="💵 Финансы"),
-            ],
-            [
                 KeyboardButton(text="🛡 Риск"),
-                KeyboardButton(text="🪙 Статистика монет"),
             ],
             [
+                KeyboardButton(text="🪙 Статистика монет"),
                 KeyboardButton(text="↕️ LONG / SHORT"),
+            ],
+            [
                 KeyboardButton(text="📉 Кривая доходности"),
             ],
             [
@@ -62,6 +68,26 @@ def get_trades_menu():
         ],
         resize_keyboard=True,
         input_field_placeholder="Сделки",
+    )
+
+
+def get_system_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="🟢 Состояние"),
+                KeyboardButton(text="🪙 Монеты"),
+            ],
+            [
+                KeyboardButton(text="📤 Экспорт"),
+                KeyboardButton(text="⚙️ Админ"),
+            ],
+            [
+                KeyboardButton(text="⬅️ Назад"),
+            ],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Система",
     )
 
 

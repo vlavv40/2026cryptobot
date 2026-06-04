@@ -13,6 +13,7 @@ from bot.keyboards import (
     get_main_menu,
     get_reset_db_confirm_menu,
     get_stats_menu,
+    get_system_menu,
     get_trades_menu,
 )
 from config import Config
@@ -369,7 +370,7 @@ async def _send_status(message: Message, dispatcher: Dispatcher):
         f"Маржа: <b>{fmt_money(Config.AUTO_TRADE_USDT)}</b>\n"
         f"Плечо: <b>x{Config.AUTO_TRADE_LEVERAGE}</b>\n"
         f"Позиция: <b>{fmt_money(Config.AUTO_TRADE_USDT * Config.AUTO_TRADE_LEVERAGE)}</b>",
-        reply_markup=get_main_menu(),
+        reply_markup=get_system_menu(),
     )
 
 
@@ -379,8 +380,11 @@ async def _send_status(message: Message, dispatcher: Dispatcher):
 
 async def _send_summary(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
+    stats = await scanner.get_stats()
     snapshot = await build_portfolio_snapshot(scanner)
     period = stats_period_label()
+    clean_stop = int(stats.get("clean_stop_hit") or 0)
+    protected_stop = int(stats.get("protected_stop_hit") or 0)
 
     await send_dashboard(
         message,
@@ -390,11 +394,59 @@ async def _send_summary(message: Message, dispatcher: Dispatcher):
         f"Плавающий PnL: <b>{fmt_signed_money(snapshot['floating_pnl'])}</b>\n"
         f"Итог сейчас: <b>{fmt_signed_money(snapshot['net_pnl'])}</b>\n"
         f"Худший сценарий: <b>{fmt_signed_money(snapshot['worst_case_pnl'])}</b>\n\n"
+        f"Закрыто: <b>{stats['closed']}</b> | "
+        f"Винрейт: <b>{stats['winrate']}%</b>\n"
+        f"TP1+: <b>{stats['tp1_hit']}</b> | "
+        f"TP2+: <b>{stats['tp2_hit']}</b> | "
+        f"TP3: <b>{stats['tp3_hit']}</b>\n"
+        f"Чистый стоп: <b>{clean_stop}</b> | "
+        f"Стоп после TP: <b>{protected_stop}</b>\n\n"
         f"Позиции: <b>{snapshot['open_count']}</b>\n"
         f"Защищено: <b>{snapshot['protected_count']}</b>\n"
         f"Маржа остатка: <b>{fmt_money(snapshot['margin_used_usdt'])}</b>\n"
         f"Объём остатка: <b>{fmt_money(snapshot['exposure_usdt'])}</b>\n"
         f"Открытый риск: <b>{fmt_money(snapshot['open_risk_usdt'])}</b>",
+        reply_markup=get_main_menu(),
+    )
+
+
+async def _send_results(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
+    stats = await scanner.get_stats()
+    period = stats_period_label()
+
+    closed = int(stats.get("closed") or 0)
+    clean_stop = int(stats.get("clean_stop_hit") or 0)
+    protected_stop = int(stats.get("protected_stop_hit") or 0)
+    tp1_then_stop = int(stats.get("tp1_then_stop") or 0)
+    tp2_then_stop = int(stats.get("tp2_then_stop") or 0)
+
+    tp1_rate = round((int(stats.get("tp1_hit") or 0) / closed) * 100, 2) if closed else 0.0
+    tp2_rate = round((int(stats.get("tp2_hit") or 0) / closed) * 100, 2) if closed else 0.0
+    clean_stop_rate = round((clean_stop / closed) * 100, 2) if closed else 0.0
+
+    await send_dashboard(
+        message,
+        f"🎯 <b>Результаты</b>\n"
+        f"Период: <b>{period}</b>\n\n"
+        "Сделки\n"
+        f"Закрыто: <b>{closed}</b>\n"
+        f"В плюс: <b>{stats['wins']}</b>\n"
+        f"В минус: <b>{stats['losses']}</b>\n"
+        f"Винрейт: <b>{stats['winrate']}%</b>\n\n"
+        "Цели\n"
+        f"Дошли до TP1: <b>{stats['tp1_hit']}</b> ({fmt_pct(tp1_rate)})\n"
+        f"Дошли до TP2: <b>{stats['tp2_hit']}</b> ({fmt_pct(tp2_rate)})\n"
+        f"Дошли до TP3: <b>{stats['tp3_hit']}</b>\n\n"
+        "Стопы\n"
+        f"Чистый стоп: <b>{clean_stop}</b> ({fmt_pct(clean_stop_rate)})\n"
+        f"Стоп после TP: <b>{protected_stop}</b>\n"
+        f"После TP1: <b>{tp1_then_stop}</b>\n"
+        f"После TP2: <b>{tp2_then_stop}</b>\n\n"
+        "Качество\n"
+        f"Результат: <b>{stats['total_r']}R</b>\n"
+        f"Средняя сделка: <b>{stats['expectancy']}R</b>\n"
+        f"Просадка: <b>{stats['max_drawdown']}R</b>",
         reply_markup=get_main_menu(),
     )
 
@@ -904,6 +956,11 @@ async def stats_handler(message: Message, dispatcher: Dispatcher):
     await _send_summary(message, dispatcher)
 
 
+@router.message(Command("results"))
+async def results_handler(message: Message, dispatcher: Dispatcher):
+    await _send_results(message, dispatcher)
+
+
 @router.message(Command("stats_symbols"))
 async def stats_symbols_handler(message: Message, dispatcher: Dispatcher):
     await _send_symbol_stats(message, dispatcher)
@@ -983,7 +1040,7 @@ async def restart_handler(message: Message):
 # BUTTONS
 # =====================
 
-@router.message(lambda m: m.text in {"📊 Статус", "🟢 Система"})
+@router.message(lambda m: m.text in {"📊 Статус", "🟢 Система", "🟢 Состояние"})
 async def btn_status(message: Message, dispatcher: Dispatcher):
     await _send_status(message, dispatcher)
 
@@ -996,6 +1053,11 @@ async def btn_summary(message: Message, dispatcher: Dispatcher):
 @router.message(lambda m: m.text == "💵 Финансы")
 async def btn_finances(message: Message, dispatcher: Dispatcher):
     await _send_finances(message, dispatcher)
+
+
+@router.message(lambda m: m.text == "🎯 Результаты")
+async def btn_results(message: Message, dispatcher: Dispatcher):
+    await _send_results(message, dispatcher)
 
 
 @router.message(lambda m: m.text == "🛡 Риск")
