@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import datetime
 
 from aiogram import Dispatcher, Router
 from aiogram.filters import Command
@@ -93,6 +94,35 @@ def fmt_money(value) -> str:
         return "-"
 
 
+def fmt_signed_money(value) -> str:
+    try:
+        value = float(value)
+    except Exception:
+        return "-"
+
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:.2f}$"
+
+
+def fmt_pct(value) -> str:
+    try:
+        value = float(value)
+    except Exception:
+        return "-"
+
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:.2f}%"
+
+
+def as_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
 def fmt_minutes(value) -> str:
     try:
         value = float(value)
@@ -107,6 +137,106 @@ def fmt_minutes(value) -> str:
         return f"{hours:.1f} ч"
 
     return f"{hours / 24:.1f} д"
+
+
+def trade_entry_price(trade: dict) -> float:
+    entry_price = as_float(trade.get("entry_price"))
+    if entry_price > 0:
+        return entry_price
+
+    entry_min = as_float(trade.get("entry_min"))
+    entry_max = as_float(trade.get("entry_max"))
+    return (entry_min + entry_max) / 2.0
+
+
+def trade_move_pct(direction: str, entry_price: float, price: float) -> float:
+    if entry_price <= 0:
+        return 0.0
+
+    if direction == "LONG":
+        return (price - entry_price) / entry_price
+
+    return (entry_price - price) / entry_price
+
+
+def trade_stage_label(stage: str) -> str:
+    if stage == "TP2_HIT":
+        return "TP2 взят, остаток идет к TP3"
+    if stage == "TP1_HIT":
+        return "TP1 взят, сделка защищена"
+    return "в работе, TP1 ещё не взят"
+
+
+def trade_remaining_share(stage: str) -> float:
+    if stage == "TP2_HIT":
+        return 0.10
+    if stage == "TP1_HIT":
+        return 0.30
+    return 1.0
+
+
+def trade_realized_partial_pnl(trade: dict, position_usdt: float, entry_price: float) -> float:
+    direction = trade.get("direction", "-")
+    stage = trade.get("protection_stage") or "INITIAL"
+    realized = 0.0
+
+    if stage in {"TP1_HIT", "TP2_HIT"}:
+        realized += position_usdt * 0.70 * trade_move_pct(
+            direction,
+            entry_price,
+            as_float(trade.get("tp1")),
+        )
+
+    if stage == "TP2_HIT":
+        realized += position_usdt * 0.20 * trade_move_pct(
+            direction,
+            entry_price,
+            as_float(trade.get("tp2")),
+        )
+
+    return realized
+
+
+def trade_live_numbers(trade: dict, current_price: float, position_usdt: float) -> dict:
+    direction = trade.get("direction", "-")
+    stage = trade.get("protection_stage") or "INITIAL"
+    entry_price = trade_entry_price(trade)
+    active_stop = as_float(trade.get("active_stop_loss") or trade.get("stop_loss"))
+    remaining_share = trade_remaining_share(stage)
+    realized_pnl = trade_realized_partial_pnl(trade, position_usdt, entry_price)
+    current_move_pct = trade_move_pct(direction, entry_price, current_price)
+    stop_move_pct = trade_move_pct(direction, entry_price, active_stop)
+
+    live_pnl = realized_pnl + position_usdt * remaining_share * current_move_pct
+    stop_pnl = realized_pnl + position_usdt * remaining_share * stop_move_pct
+
+    if stage == "TP2_HIT":
+        next_name = "TP3"
+        next_price = as_float(trade.get("tp3"))
+    elif stage == "TP1_HIT":
+        next_name = "TP2"
+        next_price = as_float(trade.get("tp2"))
+    else:
+        next_name = "TP1"
+        next_price = as_float(trade.get("tp1"))
+
+    if direction == "LONG":
+        stop_distance_pct = ((current_price - active_stop) / current_price) * 100 if current_price else 0.0
+        next_distance_pct = ((next_price - current_price) / current_price) * 100 if current_price else 0.0
+    else:
+        stop_distance_pct = ((active_stop - current_price) / current_price) * 100 if current_price else 0.0
+        next_distance_pct = ((current_price - next_price) / current_price) * 100 if current_price else 0.0
+
+    return {
+        "entry_price": entry_price,
+        "active_stop": active_stop,
+        "live_pnl": round(live_pnl, 2),
+        "stop_pnl": round(stop_pnl, 2),
+        "stop_distance_pct": stop_distance_pct,
+        "next_name": next_name,
+        "next_price": next_price,
+        "next_distance_pct": next_distance_pct,
+    }
 
 
 def is_admin(message: Message) -> bool:
@@ -276,21 +406,69 @@ async def _send_open_trades(message: Message, dispatcher: Dispatcher):
         )
         return
 
-    text = "📂 <b>Открытые сделки</b>\n\n"
+    async def enrich_trade(trade: dict) -> dict:
+        trade = dict(trade)
+        try:
+            trade["current_price"] = await scanner.execution.get_mark_price(trade["symbol"])
+        except Exception as error:
+            trade["current_price_error"] = str(error)
+        return trade
 
-    for t in trades[:10]:
+    live_trades = await asyncio.gather(*(enrich_trade(t) for t in trades[:10]))
+    paper_stats = await scanner.get_paper_stats()
+    closed_pnl = as_float(paper_stats.get("pnl_usdt"))
+    position_usdt = as_float(paper_stats.get("trade_position_usdt")) or (
+        Config.AUTO_TRADE_USDT * Config.AUTO_TRADE_LEVERAGE
+    )
+
+    total_live_pnl = 0.0
+    total_stop_pnl = 0.0
+    live_rows: list[tuple[dict, dict | None]] = []
+
+    for trade in live_trades:
+        current_price = as_float(trade.get("current_price"))
+        if current_price <= 0:
+            live_rows.append((trade, None))
+            continue
+
+        numbers = trade_live_numbers(trade, current_price, position_usdt)
+        total_live_pnl += numbers["live_pnl"]
+        total_stop_pnl += numbers["stop_pnl"]
+        live_rows.append((trade, numbers))
+
+    text = (
+        "📡 <b>Открытые сделки онлайн</b>\n"
+        f"Обновлено: <b>{datetime.now().strftime('%H:%M:%S')}</b>\n\n"
+        f"Закрытый PnL: <b>{fmt_signed_money(closed_pnl)}</b>\n"
+        f"Открытые сейчас: <b>{fmt_signed_money(total_live_pnl)}</b>\n"
+        f"Если закрыть всё сейчас: <b>{fmt_signed_money(closed_pnl + total_live_pnl)}</b>\n"
+        f"Если все стопы: <b>{fmt_signed_money(closed_pnl + total_stop_pnl)}</b>\n\n"
+    )
+
+    for t, numbers in live_rows:
         direction = t.get("direction", "-")
         emoji = "🟢" if direction == "LONG" else "🔴"
+        stage = t.get("protection_stage") or "INITIAL"
+
+        if numbers is None:
+            text += (
+                f"{emoji} <b>{t.get('symbol', '-')}</b> | <b>{direction}</b>\n"
+                f"Стадия: <b>{trade_stage_label(stage)}</b>\n"
+                "Текущую цену сейчас не удалось получить.\n\n"
+            )
+            continue
 
         text += (
             f"{emoji} <b>{t.get('symbol', '-')}</b> | <b>{direction}</b>\n"
-            f"Тип: <b>{t.get('signal_type', '-')}</b>\n"
-            f"Стадия: <b>{t.get('protection_stage', 'INITIAL')}</b>\n"
-            f"Вход: <b>{fmt_price(t.get('entry_min'))} - {fmt_price(t.get('entry_max'))}</b>\n"
-            f"Stop: <b>{fmt_price(t.get('active_stop_loss') or t.get('stop_loss'))}</b>\n"
-            f"TP1: <b>{fmt_price(t.get('tp1'))}</b>\n"
-            f"TP2: <b>{fmt_price(t.get('tp2'))}</b>\n"
-            f"TP3: <b>{fmt_price(t.get('tp3'))}</b>\n\n"
+            f"Стадия: <b>{trade_stage_label(stage)}</b>\n"
+            f"Вход: <b>{fmt_price(numbers['entry_price'])}</b> | "
+            f"Сейчас: <b>{fmt_price(t.get('current_price'))}</b>\n"
+            f"PnL сейчас: <b>{fmt_signed_money(numbers['live_pnl'])}</b>\n"
+            f"Если стоп: <b>{fmt_signed_money(numbers['stop_pnl'])}</b>\n"
+            f"До стопа: <b>{fmt_pct(numbers['stop_distance_pct'])}</b> | "
+            f"до {numbers['next_name']}: <b>{fmt_pct(numbers['next_distance_pct'])}</b>\n"
+            f"{numbers['next_name']}: <b>{fmt_price(numbers['next_price'])}</b> | "
+            f"Stop: <b>{fmt_price(numbers['active_stop'])}</b>\n\n"
         )
 
     await send_dashboard(
