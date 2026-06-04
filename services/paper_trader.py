@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from config import Config
 from services.db import db
 from services.stats_window import stats_start_at
 
@@ -32,6 +33,29 @@ class PaperTrader:
     TP1_SHARE = 0.70
     TP2_SHARE = 0.20
     TP3_SHARE = 0.10
+
+    def _trade_margin_usdt(self) -> float:
+        return float(Config.AUTO_TRADE_USDT)
+
+    def _position_usdt(self) -> float:
+        return self._trade_margin_usdt() * float(Config.AUTO_TRADE_LEVERAGE)
+
+    def _position_size(self, entry_price: float) -> float:
+        entry_price = float(entry_price)
+        if entry_price <= 0:
+            return 0.0
+        return self._position_usdt() / entry_price
+
+    def _initial_risk_amount(self, trade: dict) -> float:
+        entry_price = float(trade["entry_price"])
+        stop_loss = float(trade["stop_loss"])
+        size = self._position_size(entry_price)
+        if size <= 0:
+            return float(trade.get("risk_amount") or 0.0)
+        return abs(entry_price - stop_loss) * size
+
+    def _fixed_result_usdt(self, trade: dict) -> float:
+        return round(self._initial_risk_amount(trade) * float(trade.get("result_r") or 0.0), 2)
 
     def _target_r(self, trade: dict, price: float) -> float:
         entry_price = float(trade["entry_price"])
@@ -126,14 +150,10 @@ class PaperTrader:
         stop_price = float(trade.get("active_stop_loss") or trade["stop_loss"])
         stop_r = self._target_r(trade, stop_price)
         downside_r = abs(min(stop_r, 0.0))
-        return float(trade["risk_amount"]) * self._remaining_share(trade) * downside_r
+        return self._initial_risk_amount(trade) * self._remaining_share(trade) * downside_r
 
     def _open_volume_usdt(self, trade: dict) -> float:
-        return (
-            float(trade["size"])
-            * float(trade["entry_price"])
-            * self._remaining_share(trade)
-        )
+        return self._position_usdt() * self._remaining_share(trade)
 
     async def get_state(self) -> dict:
         assert db.pool is not None
@@ -157,19 +177,14 @@ class PaperTrader:
             if exists:
                 return None
 
-            state = await conn.fetchrow("SELECT * FROM paper_state WHERE id=1")
-            balance = float(state["balance"])
-            risk_per_trade = float(state["risk_per_trade"])
-            risk_multiplier = float(signal.diagnostics.get("risk_multiplier") or 1.0)
-
             entry_price = (signal.entry_min + signal.entry_max) / 2.0
-            risk_amount = balance * risk_per_trade * risk_multiplier
             risk_per_unit = abs(entry_price - signal.stop_loss)
+            size = self._position_size(entry_price)
 
-            if risk_per_unit <= 0:
+            if risk_per_unit <= 0 or size <= 0:
                 return None
 
-            size = risk_amount / risk_per_unit
+            risk_amount = risk_per_unit * size
 
             row = await conn.fetchrow(
                 """
@@ -271,7 +286,8 @@ class PaperTrader:
 
                 close_reason = event
                 result_r = self._weighted_result_r(trade, close_reason)
-                result_usdt = round(float(trade["risk_amount"]) * result_r, 2)
+                trade_risk_amount = self._initial_risk_amount(trade)
+                result_usdt = round(trade_risk_amount * result_r, 2)
                 balance = round(balance + result_usdt, 2)
 
                 await conn.execute(
@@ -304,7 +320,7 @@ class PaperTrader:
                         tp2=trade["tp2"],
                         tp3=trade["tp3"],
                         size=trade["size"],
-                        risk_amount=trade["risk_amount"],
+                        risk_amount=trade_risk_amount,
                         status="CLOSED",
                         result_usdt=result_usdt,
                         result_r=result_r,
@@ -338,11 +354,11 @@ class PaperTrader:
                     start_at,
                 )
                 wins = await conn.fetchval(
-                    "SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt > 0 AND created_at >= $1",
+                    "SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_r > 0 AND created_at >= $1",
                     start_at,
                 )
                 losses = await conn.fetchval(
-                    "SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt < 0 AND created_at >= $1",
+                    "SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_r < 0 AND created_at >= $1",
                     start_at,
                 )
                 total_r = await conn.fetchval(
@@ -351,7 +367,7 @@ class PaperTrader:
                 )
                 closed_rows = await conn.fetch(
                     """
-                    SELECT result_usdt, result_r
+                    SELECT result_usdt, result_r, entry_price, stop_loss, risk_amount
                     FROM paper_trades
                     WHERE status='CLOSED' AND created_at >= $1
                     ORDER BY closed_at ASC NULLS LAST, id ASC
@@ -361,12 +377,12 @@ class PaperTrader:
             else:
                 total = await conn.fetchval("SELECT COUNT(*) FROM paper_trades")
                 closed = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED'")
-                wins = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt > 0")
-                losses = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt < 0")
+                wins = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_r > 0")
+                losses = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_r < 0")
                 total_r = await conn.fetchval("SELECT COALESCE(SUM(result_r), 0) FROM paper_trades WHERE status='CLOSED'")
                 closed_rows = await conn.fetch(
                     """
-                    SELECT result_usdt, result_r
+                    SELECT result_usdt, result_r, entry_price, stop_loss, risk_amount
                     FROM paper_trades
                     WHERE status='CLOSED'
                     ORDER BY closed_at ASC NULLS LAST, id ASC
@@ -377,12 +393,14 @@ class PaperTrader:
             )
 
         start_balance = float(state["start_balance"])
-        balance = float(state["balance"])
+        stored_balance = float(state["balance"])
         risk_per_trade = float(state["risk_per_trade"])
-        result_usdt_values = [float(row["result_usdt"] or 0.0) for row in closed_rows]
-        pnl = round(sum(result_usdt_values), 2) if start_at else round(balance - start_balance, 2)
+        closed_trade_rows = [dict(row) for row in closed_rows]
+        result_usdt_values = [self._fixed_result_usdt(row) for row in closed_trade_rows]
+        pnl = round(sum(result_usdt_values), 2)
+        balance = round(start_balance + pnl, 2)
         winrate = round((wins / closed) * 100, 2) if closed > 0 else 0.0
-        result_r_values = [float(row["result_r"] or 0.0) for row in closed_rows]
+        result_r_values = [float(row["result_r"] or 0.0) for row in closed_trade_rows]
         win_r_values = [x for x in result_r_values if x > 0]
         loss_r_values = [x for x in result_r_values if x < 0]
         gross_profit = sum(win_r_values)
@@ -409,7 +427,11 @@ class PaperTrader:
         return {
             "start_balance": round(start_balance, 2),
             "balance": round(balance, 2),
+            "stored_balance": round(stored_balance, 2),
             "risk_per_trade": risk_per_trade,
+            "trade_margin_usdt": round(self._trade_margin_usdt(), 2),
+            "trade_leverage": int(Config.AUTO_TRADE_LEVERAGE),
+            "trade_position_usdt": round(self._position_usdt(), 2),
             "pnl_usdt": pnl,
             "total_r": round(float(total_r), 2),
             "total_trades": int(total),

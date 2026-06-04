@@ -1,5 +1,7 @@
 from aiogram import Bot
 
+from config import Config
+
 
 def _fmt_price(value: float) -> str:
     try:
@@ -33,6 +35,13 @@ def _fmt_r(value) -> str:
     return f"{value:.2f}R"
 
 
+def _fmt_money(value) -> str:
+    try:
+        return f"{float(value):.2f}$"
+    except Exception:
+        return "-$"
+
+
 def _direction_emoji(direction: str) -> str:
     return "🟢" if direction == "LONG" else "🔴"
 
@@ -56,16 +65,15 @@ def format_signal(signal) -> str:
 
     position_hint = "Стандартный вход"
     if signal_type == "SETUP":
-        position_hint = "Осторожный вход / сниженный риск"
+        position_hint = "Осторожный сетап"
 
-    risk_multiplier = signal.diagnostics.get("risk_multiplier") if getattr(signal, "diagnostics", None) else None
-    try:
-        risk_multiplier = float(risk_multiplier)
-    except Exception:
-        risk_multiplier = 1.0
-
-    if risk_multiplier < 0.99:
-        position_hint = f"{position_hint} ({risk_multiplier:.0%} от базового риска)"
+    entry_price = (float(signal.entry_min) + float(signal.entry_max)) / 2.0
+    position_usdt = Config.AUTO_TRADE_USDT * Config.AUTO_TRADE_LEVERAGE
+    stop_risk_usdt = (
+        position_usdt * abs(entry_price - float(signal.stop_loss)) / entry_price
+        if entry_price > 0
+        else 0.0
+    )
 
     return (
         f"{_signal_header(signal_type, direction)}\n"
@@ -83,7 +91,11 @@ def format_signal(signal) -> str:
         f"TP2: <code>{_fmt_price(signal.tp2)}</code>\n"
         f"TP3: <code>{_fmt_price(signal.tp3)}</code>\n\n"
         f"📌 <b>Риск</b>\n"
-        f"{position_hint}\n\n"
+        f"{position_hint}\n"
+        f"Маржа: <b>{_fmt_money(Config.AUTO_TRADE_USDT)}</b> | "
+        f"плечо: <b>x{Config.AUTO_TRADE_LEVERAGE}</b>\n"
+        f"Позиция: <b>{_fmt_money(position_usdt)}</b>\n"
+        f"Риск до стопа: <b>{_fmt_money(stop_risk_usdt)}</b>\n\n"
         f"🧠 <b>Причины</b>\n"
         f"{reasons_text}\n\n"
         f"━━━━━━━━━━━━━━"

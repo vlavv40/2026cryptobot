@@ -184,6 +184,12 @@ async def _send_signal_stats(message: Message, dispatcher: Dispatcher):
     closed = int(stats.get("closed") or 0)
     open_count = int(stats.get("open") or 0)
     protected_now = int(paper_stats.get("protected_trades", 0) or 0)
+    trade_margin_usdt = float(paper_stats.get("trade_margin_usdt") or 0.0)
+    trade_leverage = int(paper_stats.get("trade_leverage") or 0)
+    trade_position_usdt = float(paper_stats.get("trade_position_usdt") or 0.0)
+    pnl_usdt = float(paper_stats.get("pnl_usdt") or 0.0)
+    open_risk_usdt = float(paper_stats.get("open_risk_usdt") or 0.0)
+    worst_case_pnl = pnl_usdt - open_risk_usdt
 
     if float(stats.get("expectancy") or 0.0) > 0:
         conclusion = "бот сейчас торгует в плюс."
@@ -197,7 +203,7 @@ async def _send_signal_stats(message: Message, dispatcher: Dispatcher):
         f"📈 <b>Статистика {period}</b>\n\n"
         f"🧠 <b>Главное:</b> {conclusion}\n\n"
         "💰 <b>Деньги</b>\n"
-        f"PnL: <b>{fmt_money(paper_stats.get('pnl_usdt'))}</b>\n"
+        f"PnL закрытых: <b>{fmt_money(pnl_usdt)}</b>\n"
         f"Результат: <b>{stats['total_r']}R</b>\n"
         f"Средняя сделка: <b>{stats['expectancy']}R</b>\n\n"
         "📌 <b>Сделки</b>\n"
@@ -206,9 +212,12 @@ async def _send_signal_stats(message: Message, dispatcher: Dispatcher):
         f"Стоп после прибыли: <b>{protected_stop}</b>\n\n"
         "🟡 <b>Сейчас</b>\n"
         f"Открыто: <b>{open_count}</b> | защищено: <b>{protected_now}</b>\n"
-        f"Риск в рынке: <b>{fmt_money(paper_stats.get('open_risk_usdt'))}</b>\n\n"
-        "Полный стоп = сделка сразу ушла в минус. "
-        "Стоп после прибыли = сделка уже брала TP.",
+        f"Маржа на сделку: <b>{fmt_money(trade_margin_usdt)}</b> | плечо: <b>x{trade_leverage}</b>\n"
+        f"Позиция на сделку: <b>{fmt_money(trade_position_usdt)}</b>\n"
+        f"Риск в рынке: <b>{fmt_money(open_risk_usdt)}</b>\n"
+        f"Если все стопы сейчас: <b>{fmt_money(worst_case_pnl)}</b>\n\n"
+        "Маржа = сколько занято на вход. "
+        "Риск = сколько можно потерять до стопа.",
         reply_markup=get_stats_menu(),
     )
 

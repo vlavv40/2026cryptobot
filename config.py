@@ -217,7 +217,7 @@ class Config:
     BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
     AUTO_TRADE = os.getenv("AUTO_TRADE", "false").lower() == "true"
-    AUTO_TRADE_USDT = float(os.getenv("AUTO_TRADE_USDT", "10"))
-    AUTO_TRADE_LEVERAGE = int(os.getenv("AUTO_TRADE_LEVERAGE", "3"))
+    AUTO_TRADE_USDT = float(os.getenv("AUTO_TRADE_USDT", "200"))
+    AUTO_TRADE_LEVERAGE = int(os.getenv("AUTO_TRADE_LEVERAGE", "5"))
     AUTO_TRADE_MARGIN_TYPE = os.getenv("AUTO_TRADE_MARGIN_TYPE", "ISOLATED").upper()
     AUTO_TRADE_ONE_POSITION_PER_SYMBOL = os.getenv("AUTO_TRADE_ONE_POSITION_PER_SYMBOL", "true").lower() == "true"

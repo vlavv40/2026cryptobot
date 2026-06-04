@@ -134,52 +134,38 @@ class StrategyPolicy:
                 tags=["CONCENTRATION_BLOCK"],
             )
 
-        risk_multiplier = 1.0
         score_delta = 0.0
         tags: list[str] = []
         reasons: list[str] = []
 
         if getattr(signal, "signal_type", "SETUP") == "SETUP":
-            risk_multiplier *= Config.POLICY_SETUP_RISK_MULTIPLIER
-            tags.append("SETUP_RISK")
+            tags.append("SETUP")
 
         if self._counter_to_btc(signal.direction, context.btc_bias):
-            risk_multiplier *= Config.POLICY_COUNTER_BTC_RISK_MULTIPLIER
             score_delta -= 0.3
             tags.append("BTC_COUNTER")
-            reasons.append("BTC против направления, риск снижен")
+            reasons.append("BTC против направления")
 
         if self._counter_to_sentiment(signal.direction, context.sentiment_bias):
-            risk_multiplier *= 0.70
             score_delta -= 0.2
             tags.append("SENTIMENT_COUNTER")
-            reasons.append("новостной фон против направления, риск снижен")
+            reasons.append("новостной фон против направления")
 
         if self._is_meme_symbol(signal.symbol):
-            risk_multiplier *= Config.POLICY_MEME_RISK_MULTIPLIER
             tags.append("HIGH_BETA")
-            reasons.append("high-beta/meme тикер, риск снижен")
+            reasons.append("high-beta/meme тикер")
 
         risk_pct = self._safe_float(signal.diagnostics.get("risk_pct"))
         if risk_pct >= 0.035:
-            risk_multiplier *= 0.75
             tags.append("WIDE_STOP")
-            reasons.append("широкий стоп относительно цены, риск снижен")
-
-        risk_multiplier = max(
-            Config.POLICY_MIN_RISK_MULTIPLIER,
-            min(1.0, risk_multiplier),
-        )
-
-        if risk_multiplier < 1.0 and not reasons:
-            reasons.append("системный риск снижен policy-layer")
+            reasons.append("широкий стоп относительно цены")
 
         reason = "; ".join(reasons) if reasons else "strategy policy: allowed"
 
         return StrategyDecision(
             True,
             reason,
-            risk_multiplier=round(risk_multiplier, 3),
+            risk_multiplier=1.0,
             score_delta=score_delta,
             tags=tags,
         )

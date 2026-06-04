@@ -588,8 +588,13 @@ class MarketScanner:
         open_trades = int(stats.get("open_trades") or 0)
         open_risk = float(stats.get("open_risk_usdt") or 0.0)
         open_volume = float(stats.get("open_volume_usdt") or 0.0)
-        risk_multiplier = float(signal.diagnostics.get("risk_multiplier") or 1.0)
-        next_risk = balance * float(stats.get("risk_per_trade") or 0.0) * risk_multiplier
+        entry_price = (float(signal.entry_min) + float(signal.entry_max)) / 2.0
+        position_usdt = Config.AUTO_TRADE_USDT * Config.AUTO_TRADE_LEVERAGE
+        next_risk = (
+            position_usdt * abs(entry_price - float(signal.stop_loss)) / entry_price
+            if entry_price > 0
+            else 0.0
+        )
 
         max_risk = balance * Config.MAX_TOTAL_OPEN_RISK_PCT
         max_volume = balance * Config.MAX_OPEN_VOLUME_TO_BALANCE
@@ -600,8 +605,8 @@ class MarketScanner:
         if balance > 0 and open_risk + next_risk > max_risk:
             return False, f"portfolio: лимит открытого риска ({open_risk + next_risk:.2f}$/{max_risk:.2f}$)"
 
-        if balance > 0 and open_volume >= max_volume:
-            return False, f"portfolio: перегрузка объёма ({open_volume:.2f}$/{max_volume:.2f}$)"
+        if balance > 0 and open_volume + position_usdt > max_volume:
+            return False, f"portfolio: перегрузка объёма ({open_volume + position_usdt:.2f}$/{max_volume:.2f}$)"
 
         return True, ""
 

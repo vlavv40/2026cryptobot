@@ -558,8 +558,7 @@ class ExecutionService:
 
             rules = await self.get_symbol_rules(symbol)
 
-            risk_multiplier = float(signal.diagnostics.get("risk_multiplier") or 1.0)
-            margin_usdt = Config.AUTO_TRADE_USDT * risk_multiplier
+            margin_usdt = Config.AUTO_TRADE_USDT
 
             position_usdt = (
                 margin_usdt
@@ -582,6 +581,7 @@ class ExecutionService:
                 float(signal.stop_loss),
                 rules["tick_size"],
             )
+            stop_risk_usdt = position_usdt * abs(price - stop_price) / price if price > 0 else 0.0
 
             tp1 = self.round_price(
                 float(signal.tp1),
@@ -660,7 +660,7 @@ class ExecutionService:
                 f"Маржа: <b>{round(margin_usdt, 2)}$</b>\n"
                 f"Плечо: <b>x{Config.AUTO_TRADE_LEVERAGE}</b>\n"
                 f"Позиция: <b>{position_usdt}$</b>\n"
-                f"Risk multiplier: <b>{risk_multiplier}</b>\n"
+                f"Риск до стопа: <b>{round(stop_risk_usdt, 2)}$</b>\n"
                 f"Qty: <b>{qty}</b>\n\n"
                 f"Stop: <code>{stop_price}</code>\n"
                 f"TP1: <code>{tp1}</code> — 70%\n"
