@@ -10,6 +10,7 @@ import pandas as pd
 from config import Config
 from services.db import db
 from services.stats_analyzer import StatsAnalyzer
+from services.stats_window import stats_start_at
 
 
 class TradeTracker:
@@ -154,16 +155,21 @@ class TradeTracker:
     async def get_all_signals(self, include_before_reset: bool = False) -> list[dict]:
         assert db.pool is not None
         reset_at = None if include_before_reset else await self._stats_reset_at()
+        configured_start_at = None if include_before_reset else stats_start_at()
+        start_at = max(
+            [value for value in (reset_at, configured_start_at) if value is not None],
+            default=None,
+        )
 
         async with db.pool.acquire() as conn:
-            if reset_at:
+            if start_at:
                 rows = await conn.fetch(
                     """
                     SELECT * FROM tracked_signals
                     WHERE created_at >= $1
                     ORDER BY created_at DESC
                     """,
-                    reset_at,
+                    start_at,
                 )
             else:
                 rows = await conn.fetch("SELECT * FROM tracked_signals ORDER BY created_at DESC")

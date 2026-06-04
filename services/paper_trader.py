@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from services.db import db
+from services.stats_window import stats_start_at
 
 
 @dataclass
@@ -322,22 +323,55 @@ class PaperTrader:
 
     async def stats(self) -> dict:
         assert db.pool is not None
+        start_at = stats_start_at()
+
         async with db.pool.acquire() as conn:
             state = await conn.fetchrow("SELECT * FROM paper_state WHERE id=1")
-            total = await conn.fetchval("SELECT COUNT(*) FROM paper_trades")
             open_trades = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'")
-            closed = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED'")
-            wins = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt > 0")
-            losses = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt < 0")
-            total_r = await conn.fetchval("SELECT COALESCE(SUM(result_r), 0) FROM paper_trades WHERE status='CLOSED'")
-            closed_rows = await conn.fetch(
-                """
-                SELECT result_usdt, result_r
-                FROM paper_trades
-                WHERE status='CLOSED'
-                ORDER BY closed_at ASC NULLS LAST, id ASC
-                """
-            )
+            if start_at:
+                total = await conn.fetchval(
+                    "SELECT COUNT(*) FROM paper_trades WHERE created_at >= $1 OR status='OPEN'",
+                    start_at,
+                )
+                closed = await conn.fetchval(
+                    "SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND created_at >= $1",
+                    start_at,
+                )
+                wins = await conn.fetchval(
+                    "SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt > 0 AND created_at >= $1",
+                    start_at,
+                )
+                losses = await conn.fetchval(
+                    "SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt < 0 AND created_at >= $1",
+                    start_at,
+                )
+                total_r = await conn.fetchval(
+                    "SELECT COALESCE(SUM(result_r), 0) FROM paper_trades WHERE status='CLOSED' AND created_at >= $1",
+                    start_at,
+                )
+                closed_rows = await conn.fetch(
+                    """
+                    SELECT result_usdt, result_r
+                    FROM paper_trades
+                    WHERE status='CLOSED' AND created_at >= $1
+                    ORDER BY closed_at ASC NULLS LAST, id ASC
+                    """,
+                    start_at,
+                )
+            else:
+                total = await conn.fetchval("SELECT COUNT(*) FROM paper_trades")
+                closed = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED'")
+                wins = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt > 0")
+                losses = await conn.fetchval("SELECT COUNT(*) FROM paper_trades WHERE status='CLOSED' AND result_usdt < 0")
+                total_r = await conn.fetchval("SELECT COALESCE(SUM(result_r), 0) FROM paper_trades WHERE status='CLOSED'")
+                closed_rows = await conn.fetch(
+                    """
+                    SELECT result_usdt, result_r
+                    FROM paper_trades
+                    WHERE status='CLOSED'
+                    ORDER BY closed_at ASC NULLS LAST, id ASC
+                    """
+                )
             open_rows = await conn.fetch(
                 "SELECT * FROM paper_trades WHERE status='OPEN'"
             )
@@ -345,7 +379,8 @@ class PaperTrader:
         start_balance = float(state["start_balance"])
         balance = float(state["balance"])
         risk_per_trade = float(state["risk_per_trade"])
-        pnl = round(balance - start_balance, 2)
+        result_usdt_values = [float(row["result_usdt"] or 0.0) for row in closed_rows]
+        pnl = round(sum(result_usdt_values), 2) if start_at else round(balance - start_balance, 2)
         winrate = round((wins / closed) * 100, 2) if closed > 0 else 0.0
         result_r_values = [float(row["result_r"] or 0.0) for row in closed_rows]
         win_r_values = [x for x in result_r_values if x > 0]

@@ -122,6 +122,32 @@ class StatsAnalyzer:
         total = len(self.trades)
         open_count = sum(1 for x in self.trades if x.get("status") == "OPEN")
         stop_hit = sum(1 for x in self.trades if x.get("status") == "STOP_HIT")
+        clean_stop_hit = sum(
+            1
+            for x in self.trades
+            if x.get("status") == "STOP_HIT"
+            and not x.get("tp1_hit_at")
+            and not x.get("tp2_hit_at")
+        )
+        protected_stop_hit = sum(
+            1
+            for x in self.trades
+            if x.get("status") == "STOP_HIT"
+            and (x.get("tp1_hit_at") or x.get("tp2_hit_at"))
+        )
+        tp1_then_stop = sum(
+            1
+            for x in self.trades
+            if x.get("status") == "STOP_HIT"
+            and x.get("tp1_hit_at")
+            and not x.get("tp2_hit_at")
+        )
+        tp2_then_stop = sum(
+            1
+            for x in self.trades
+            if x.get("status") == "STOP_HIT"
+            and x.get("tp2_hit_at")
+        )
         tp1_hit = sum(
             1
             for x in self.trades
@@ -177,6 +203,10 @@ class StatsAnalyzer:
             "tp2_hit": tp2_hit,
             "tp3_hit": tp3_hit,
             "stop_hit": stop_hit,
+            "clean_stop_hit": clean_stop_hit,
+            "protected_stop_hit": protected_stop_hit,
+            "tp1_then_stop": tp1_then_stop,
+            "tp2_then_stop": tp2_then_stop,
             "stop_rate": stop_rate,
             "winrate": winrate,
             "total_r": total_r,

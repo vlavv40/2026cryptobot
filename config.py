@@ -113,6 +113,7 @@ class Config:
     SEND_STARTUP_MESSAGE = os.getenv("SEND_STARTUP_MESSAGE", "true").lower() == "true"
     SEND_CYCLE_MESSAGES = os.getenv("SEND_CYCLE_MESSAGES", "false").lower() == "true"
     SEND_NEWS_BLOCK_MESSAGE = os.getenv("SEND_NEWS_BLOCK_MESSAGE", "true").lower() == "true"
+    STATS_START_DATE = os.getenv("STATS_START_DATE", "2026-06-03")
 
     # =========================================================
     # ENTRY / RSI FILTERS
