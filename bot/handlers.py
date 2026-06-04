@@ -110,8 +110,7 @@ def fmt_pct(value) -> str:
     except Exception:
         return "-"
 
-    sign = "+" if value > 0 else ""
-    return f"{sign}{value:.2f}%"
+    return f"{value:.2f}%"
 
 
 def as_float(value, default: float = 0.0) -> float:
@@ -239,6 +238,102 @@ def trade_live_numbers(trade: dict, current_price: float, position_usdt: float) 
     }
 
 
+async def build_portfolio_snapshot(scanner, limit: int = 10) -> dict:
+    trades = await scanner.get_paper_open_trades()
+    paper_stats = await scanner.get_paper_stats()
+
+    margin_usdt = as_float(paper_stats.get("trade_margin_usdt")) or Config.AUTO_TRADE_USDT
+    leverage = int(paper_stats.get("trade_leverage") or Config.AUTO_TRADE_LEVERAGE)
+    position_usdt = as_float(paper_stats.get("trade_position_usdt")) or (margin_usdt * leverage)
+
+    async def enrich_trade(trade: dict) -> dict:
+        trade = dict(trade)
+        try:
+            trade["current_price"] = await scanner.execution.get_mark_price(trade["symbol"])
+        except Exception as error:
+            trade["current_price_error"] = str(error)
+        return trade
+
+    live_trades = await asyncio.gather(*(enrich_trade(t) for t in trades[:limit]))
+
+    total_live_pnl = 0.0
+    total_stop_pnl = 0.0
+    exposure_usdt = 0.0
+    margin_used_usdt = 0.0
+    protected_count = 0
+    long_count = 0
+    short_count = 0
+    rows: list[tuple[dict, dict | None]] = []
+
+    for trade in live_trades:
+        stage = trade.get("protection_stage") or "INITIAL"
+        remaining_share = trade_remaining_share(stage)
+        exposure_usdt += position_usdt * remaining_share
+        margin_used_usdt += margin_usdt * remaining_share
+
+        if stage in {"TP1_HIT", "TP2_HIT"}:
+            protected_count += 1
+
+        if trade.get("direction") == "LONG":
+            long_count += 1
+        elif trade.get("direction") == "SHORT":
+            short_count += 1
+
+        current_price = as_float(trade.get("current_price"))
+        if current_price <= 0:
+            entry_price = trade_entry_price(trade)
+            active_stop = as_float(trade.get("active_stop_loss") or trade.get("stop_loss"))
+            realized_pnl = trade_realized_partial_pnl(trade, position_usdt, entry_price)
+            stop_move_pct = trade_move_pct(trade.get("direction", "-"), entry_price, active_stop)
+            total_stop_pnl += realized_pnl + position_usdt * remaining_share * stop_move_pct
+            rows.append((trade, None))
+            continue
+
+        numbers = trade_live_numbers(trade, current_price, position_usdt)
+        total_live_pnl += numbers["live_pnl"]
+        total_stop_pnl += numbers["stop_pnl"]
+        rows.append((trade, numbers))
+
+    closed_pnl = as_float(paper_stats.get("pnl_usdt"))
+    net_pnl = closed_pnl + total_live_pnl
+    worst_case_pnl = closed_pnl + total_stop_pnl
+    balance = as_float(paper_stats.get("balance"))
+    open_risk = as_float(paper_stats.get("open_risk_usdt"))
+    risk_limit = balance * Config.MAX_TOTAL_OPEN_RISK_PCT if balance > 0 else 0.0
+    risk_load = (open_risk / risk_limit * 100) if risk_limit > 0 else 0.0
+
+    if long_count and short_count:
+        skew = f"LONG {long_count} / SHORT {short_count}"
+    elif long_count:
+        skew = f"{long_count} LONG"
+    elif short_count:
+        skew = f"{short_count} SHORT"
+    else:
+        skew = "нет"
+
+    return {
+        "paper_stats": paper_stats,
+        "rows": rows,
+        "closed_pnl": round(closed_pnl, 2),
+        "floating_pnl": round(total_live_pnl, 2),
+        "net_pnl": round(net_pnl, 2),
+        "worst_case_pnl": round(worst_case_pnl, 2),
+        "open_count": len(trades),
+        "protected_count": protected_count,
+        "margin_usdt": round(margin_usdt, 2),
+        "leverage": leverage,
+        "position_usdt": round(position_usdt, 2),
+        "margin_used_usdt": round(margin_used_usdt, 2),
+        "exposure_usdt": round(exposure_usdt, 2),
+        "open_risk_usdt": round(open_risk, 2),
+        "risk_limit_usdt": round(risk_limit, 2),
+        "risk_load_pct": round(risk_load, 2),
+        "long_count": long_count,
+        "short_count": short_count,
+        "skew": skew,
+    }
+
+
 def is_admin(message: Message) -> bool:
     return str(message.chat.id) in Config.CHAT_IDS
 
@@ -257,43 +352,23 @@ async def guard_admin(message: Message) -> bool:
 
 async def _send_status(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    stats = await scanner.get_stats()
-    paper_stats = await scanner.get_paper_stats()
     heartbeat = await scanner.get_heartbeat()
     last_cycle = heartbeat.get("last_cycle", {})
 
-    tp_total = (
-        int(stats["tp1_hit"])
-        + int(stats["tp2_hit"])
-        + int(stats["tp3_hit"])
-    )
-
     await send_dashboard(
         message,
-        "📊 <b>Состояние системы</b>\n\n"
-        "🟢 Бот активен\n\n"
-        "⚙️ <b>Цикл</b>\n"
+        "⚙️ <b>Система</b>\n\n"
+        "Статус: <b>активен</b>\n"
         f"Режим: <b>{heartbeat.get('mode')}</b>\n"
-        f"Интервал: <b>{heartbeat.get('scan_interval')} сек</b>\n"
-        f"Последний запуск: <b>{last_cycle.get('started_at') or '-'}</b>\n"
-        f"Проверено пар: <b>{last_cycle.get('symbols_checked', 0)}</b>\n\n"
-        "📈 <b>Сигналы</b>\n"
-        f"Всего: <b>{stats['total']}</b>\n"
-        f"Открытые: <b>{stats['open']}</b>\n"
-        f"Закрытые: <b>{stats['closed']}</b>\n\n"
-        "🎯 <b>Результаты</b>\n"
-        f"TP: <b>{tp_total}</b>\n"
-        f"STOP: <b>{stats['stop_hit']}</b>\n\n"
-        "📊 <b>Качество</b>\n"
-        f"Winrate: <b>{stats['winrate']}%</b>\n"
-        f"Total R: <b>{stats['total_r']}</b>\n"
-        f"Avg R: <b>{stats['avg_r']}</b>\n"
-        f"Expectancy: <b>{stats['expectancy']}</b>\n\n"
-        "💵 <b>Paper</b>\n"
-        f"PnL: <b>{fmt_money(paper_stats.get('pnl_usdt'))}</b>\n"
-        f"Risk open: <b>{fmt_money(paper_stats.get('open_risk_usdt'))}</b>\n"
-        f"Volume open: <b>{fmt_money(paper_stats.get('open_volume_usdt'))}</b>\n"
-        f"Protected: <b>{paper_stats.get('protected_trades', 0)}</b>",
+        f"Автоторговля: <b>{'включена' if Config.AUTO_TRADE else 'выключена'}</b>\n"
+        f"Сканирование: <b>{heartbeat.get('scan_interval')} сек</b>\n"
+        f"Последний цикл: <b>{last_cycle.get('started_at') or '-'}</b>\n"
+        f"Проверено пар: <b>{last_cycle.get('symbols_checked', 0)}</b>\n"
+        f"Сигналов в цикле: <b>{last_cycle.get('signals_found', 0)}</b>\n\n"
+        "Параметры сделки\n"
+        f"Маржа: <b>{fmt_money(Config.AUTO_TRADE_USDT)}</b>\n"
+        f"Плечо: <b>x{Config.AUTO_TRADE_LEVERAGE}</b>\n"
+        f"Позиция: <b>{fmt_money(Config.AUTO_TRADE_USDT * Config.AUTO_TRADE_LEVERAGE)}</b>",
         reply_markup=get_main_menu(),
     )
 
@@ -302,54 +377,73 @@ async def _send_status(message: Message, dispatcher: Dispatcher):
 # STATS
 # =====================
 
-async def _send_signal_stats(message: Message, dispatcher: Dispatcher):
+async def _send_summary(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    stats = await scanner.get_stats()
-    paper_stats = await scanner.get_paper_stats()
+    snapshot = await build_portfolio_snapshot(scanner)
     period = stats_period_label()
-    clean_stop = int(stats.get("clean_stop_hit") or 0)
-    protected_stop = int(stats.get("protected_stop_hit") or 0)
-    wins = int(stats.get("wins") or 0)
-    losses = int(stats.get("losses") or 0)
-    closed = int(stats.get("closed") or 0)
-    open_count = int(stats.get("open") or 0)
-    protected_now = int(paper_stats.get("protected_trades", 0) or 0)
-    trade_margin_usdt = float(paper_stats.get("trade_margin_usdt") or 0.0)
-    trade_leverage = int(paper_stats.get("trade_leverage") or 0)
-    trade_position_usdt = float(paper_stats.get("trade_position_usdt") or 0.0)
-    pnl_usdt = float(paper_stats.get("pnl_usdt") or 0.0)
-    open_risk_usdt = float(paper_stats.get("open_risk_usdt") or 0.0)
-    worst_case_pnl = pnl_usdt - open_risk_usdt
-
-    if float(stats.get("expectancy") or 0.0) > 0:
-        conclusion = "бот сейчас торгует в плюс."
-    elif closed < 10:
-        conclusion = "сделок ещё мало, вывод рано делать."
-    else:
-        conclusion = "математика слабая, нужно снижать риск или править фильтры."
 
     await send_dashboard(
         message,
-        f"📈 <b>Статистика {period}</b>\n\n"
-        f"🧠 <b>Главное:</b> {conclusion}\n\n"
-        "💰 <b>Деньги</b>\n"
-        f"PnL закрытых: <b>{fmt_money(pnl_usdt)}</b>\n"
-        f"Результат: <b>{stats['total_r']}R</b>\n"
-        f"Средняя сделка: <b>{stats['expectancy']}R</b>\n\n"
-        "📌 <b>Сделки</b>\n"
-        f"Закрыто: <b>{closed}</b> | плюс: <b>{wins}</b> | минус: <b>{losses}</b>\n"
-        f"Полный стоп: <b>{clean_stop}</b>\n"
-        f"Стоп после прибыли: <b>{protected_stop}</b>\n\n"
-        "🟡 <b>Сейчас</b>\n"
-        f"Открыто: <b>{open_count}</b> | защищено: <b>{protected_now}</b>\n"
-        f"Маржа на сделку: <b>{fmt_money(trade_margin_usdt)}</b> | плечо: <b>x{trade_leverage}</b>\n"
-        f"Позиция на сделку: <b>{fmt_money(trade_position_usdt)}</b>\n"
-        f"Риск в рынке: <b>{fmt_money(open_risk_usdt)}</b>\n"
-        f"Если все стопы сейчас: <b>{fmt_money(worst_case_pnl)}</b>\n\n"
-        "Маржа = сколько занято на вход. "
-        "Риск = сколько можно потерять до стопа.",
-        reply_markup=get_stats_menu(),
+        f"📊 <b>Сводка</b>\n"
+        f"Период: <b>{period}</b>\n\n"
+        f"Зафиксировано: <b>{fmt_signed_money(snapshot['closed_pnl'])}</b>\n"
+        f"Плавающий PnL: <b>{fmt_signed_money(snapshot['floating_pnl'])}</b>\n"
+        f"Итог сейчас: <b>{fmt_signed_money(snapshot['net_pnl'])}</b>\n"
+        f"Худший сценарий: <b>{fmt_signed_money(snapshot['worst_case_pnl'])}</b>\n\n"
+        f"Позиции: <b>{snapshot['open_count']}</b>\n"
+        f"Защищено: <b>{snapshot['protected_count']}</b>\n"
+        f"Маржа остатка: <b>{fmt_money(snapshot['margin_used_usdt'])}</b>\n"
+        f"Объём остатка: <b>{fmt_money(snapshot['exposure_usdt'])}</b>\n"
+        f"Открытый риск: <b>{fmt_money(snapshot['open_risk_usdt'])}</b>",
+        reply_markup=get_main_menu(),
     )
+
+
+async def _send_finances(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
+    stats = await scanner.get_stats()
+    snapshot = await build_portfolio_snapshot(scanner)
+    period = stats_period_label()
+
+    await send_dashboard(
+        message,
+        f"💵 <b>Финансы</b>\n"
+        f"Период: <b>{period}</b>\n\n"
+        f"Зафиксировано: <b>{fmt_signed_money(snapshot['closed_pnl'])}</b>\n"
+        f"Плавающий PnL: <b>{fmt_signed_money(snapshot['floating_pnl'])}</b>\n"
+        f"Итог сейчас: <b>{fmt_signed_money(snapshot['net_pnl'])}</b>\n"
+        f"Худший сценарий: <b>{fmt_signed_money(snapshot['worst_case_pnl'])}</b>\n\n"
+        f"Закрыто сделок: <b>{stats['closed']}</b>\n"
+        f"В плюс: <b>{stats['wins']}</b>\n"
+        f"В минус: <b>{stats['losses']}</b>\n"
+        f"Результат: <b>{stats['total_r']}R</b>\n"
+        f"Средняя сделка: <b>{stats['expectancy']}R</b>",
+        reply_markup=get_main_menu(),
+    )
+
+
+async def _send_risk(message: Message, dispatcher: Dispatcher):
+    scanner = dispatcher["scanner"]
+    snapshot = await build_portfolio_snapshot(scanner)
+
+    await send_dashboard(
+        message,
+        "🛡 <b>Риск</b>\n\n"
+        f"Открытый риск: <b>{fmt_money(snapshot['open_risk_usdt'])}</b>\n"
+        f"Лимит риска: <b>{fmt_money(snapshot['risk_limit_usdt'])}</b>\n"
+        f"Загрузка риска: <b>{fmt_pct(snapshot['risk_load_pct'])}</b>\n\n"
+        f"Худший сценарий: <b>{fmt_signed_money(snapshot['worst_case_pnl'])}</b>\n"
+        f"Позиции: <b>{snapshot['open_count']} / {Config.MAX_OPEN_TRADES}</b>\n"
+        f"Защищено: <b>{snapshot['protected_count']}</b>\n"
+        f"Перекос: <b>{snapshot['skew']}</b>\n\n"
+        f"Маржа остатка: <b>{fmt_money(snapshot['margin_used_usdt'])}</b>\n"
+        f"Объём остатка: <b>{fmt_money(snapshot['exposure_usdt'])}</b>",
+        reply_markup=get_main_menu(),
+    )
+
+
+async def _send_signal_stats(message: Message, dispatcher: Dispatcher):
+    await _send_finances(message, dispatcher)
 
 
 # =====================
@@ -395,54 +489,24 @@ async def _send_last_signals(message: Message, dispatcher: Dispatcher):
 
 async def _send_open_trades(message: Message, dispatcher: Dispatcher):
     scanner = dispatcher["scanner"]
-    trades = await scanner.get_paper_open_trades()
+    snapshot = await build_portfolio_snapshot(scanner)
+    live_rows = snapshot["rows"]
 
-    if not trades:
+    if not live_rows:
         await send_dashboard(
             message,
-            "📂 <b>Открытые сделки</b>\n\n"
-            "Нет активных сделок.",
+            "📈 <b>Позиции</b>\n\n"
+            "Нет открытых позиций.",
             reply_markup=get_trades_menu(),
         )
         return
 
-    async def enrich_trade(trade: dict) -> dict:
-        trade = dict(trade)
-        try:
-            trade["current_price"] = await scanner.execution.get_mark_price(trade["symbol"])
-        except Exception as error:
-            trade["current_price_error"] = str(error)
-        return trade
-
-    live_trades = await asyncio.gather(*(enrich_trade(t) for t in trades[:10]))
-    paper_stats = await scanner.get_paper_stats()
-    closed_pnl = as_float(paper_stats.get("pnl_usdt"))
-    position_usdt = as_float(paper_stats.get("trade_position_usdt")) or (
-        Config.AUTO_TRADE_USDT * Config.AUTO_TRADE_LEVERAGE
-    )
-
-    total_live_pnl = 0.0
-    total_stop_pnl = 0.0
-    live_rows: list[tuple[dict, dict | None]] = []
-
-    for trade in live_trades:
-        current_price = as_float(trade.get("current_price"))
-        if current_price <= 0:
-            live_rows.append((trade, None))
-            continue
-
-        numbers = trade_live_numbers(trade, current_price, position_usdt)
-        total_live_pnl += numbers["live_pnl"]
-        total_stop_pnl += numbers["stop_pnl"]
-        live_rows.append((trade, numbers))
-
     text = (
-        "📡 <b>Открытые сделки онлайн</b>\n"
+        "📈 <b>Позиции</b>\n"
         f"Обновлено: <b>{datetime.now().strftime('%H:%M:%S')}</b>\n\n"
-        f"Закрытый PnL: <b>{fmt_signed_money(closed_pnl)}</b>\n"
-        f"Открытые сейчас: <b>{fmt_signed_money(total_live_pnl)}</b>\n"
-        f"Если закрыть всё сейчас: <b>{fmt_signed_money(closed_pnl + total_live_pnl)}</b>\n"
-        f"Если все стопы: <b>{fmt_signed_money(closed_pnl + total_stop_pnl)}</b>\n\n"
+        f"Плавающий PnL: <b>{fmt_signed_money(snapshot['floating_pnl'])}</b>\n"
+        f"Итог сейчас: <b>{fmt_signed_money(snapshot['net_pnl'])}</b>\n"
+        f"Худший сценарий: <b>{fmt_signed_money(snapshot['worst_case_pnl'])}</b>\n\n"
     )
 
     for t, numbers in live_rows:
@@ -453,17 +517,17 @@ async def _send_open_trades(message: Message, dispatcher: Dispatcher):
         if numbers is None:
             text += (
                 f"{emoji} <b>{t.get('symbol', '-')}</b> | <b>{direction}</b>\n"
-                f"Стадия: <b>{trade_stage_label(stage)}</b>\n"
+                f"Статус: <b>{trade_stage_label(stage)}</b>\n"
                 "Текущую цену сейчас не удалось получить.\n\n"
             )
             continue
 
         text += (
             f"{emoji} <b>{t.get('symbol', '-')}</b> | <b>{direction}</b>\n"
-            f"Стадия: <b>{trade_stage_label(stage)}</b>\n"
+            f"Статус: <b>{trade_stage_label(stage)}</b>\n"
             f"Вход: <b>{fmt_price(numbers['entry_price'])}</b> | "
             f"Сейчас: <b>{fmt_price(t.get('current_price'))}</b>\n"
-            f"PnL сейчас: <b>{fmt_signed_money(numbers['live_pnl'])}</b>\n"
+            f"Плавающий PnL: <b>{fmt_signed_money(numbers['live_pnl'])}</b>\n"
             f"Если стоп: <b>{fmt_signed_money(numbers['stop_pnl'])}</b>\n"
             f"До стопа: <b>{fmt_pct(numbers['stop_distance_pct'])}</b> | "
             f"до {numbers['next_name']}: <b>{fmt_pct(numbers['next_distance_pct'])}</b>\n"
@@ -489,16 +553,17 @@ async def _send_history(message: Message, dispatcher: Dispatcher):
     if not trades:
         await send_dashboard(
             message,
-            "📜 <b>История сделок</b>\n\n"
-            "История пустая.",
+            "📜 <b>Журнал</b>\n\n"
+            "Закрытых сделок пока нет.",
             reply_markup=get_trades_menu(),
         )
         return
 
-    text = "📜 <b>История сделок</b>\n\n"
+    text = "📜 <b>Журнал</b>\n\n"
 
     for t in trades:
         result_r = float(t.get("result_r") or 0)
+        result_usdt = as_float(t.get("result_usdt"))
 
         if result_r > 0:
             emoji = "✅"
@@ -508,10 +573,11 @@ async def _send_history(message: Message, dispatcher: Dispatcher):
             emoji = "⚪️"
 
         text += (
-            f"{emoji} <b>{t.get('symbol', '-')}</b>\n"
-            f"Направление: <b>{t.get('direction', '-')}</b>\n"
-            f"Статус: <b>{t.get('close_reason', '-')}</b>\n"
-            f"Результат: <b>{fmt_r(result_r)}</b>\n\n"
+            f"{emoji} <b>{t.get('symbol', '-')}</b> "
+            f"{t.get('direction', '-')} | "
+            f"<b>{fmt_signed_money(result_usdt)}</b> | "
+            f"{fmt_r(result_r)} | "
+            f"{t.get('close_reason', '-')}\n"
         )
 
     await send_dashboard(
@@ -547,10 +613,10 @@ async def _send_symbol_stats(message: Message, dispatcher: Dispatcher):
         for item in profitable:
             text += (
                 f"<b>{item['symbol']}</b> | "
-                f"WR {item['winrate']}% | "
-                f"Exp {item['expectancy']}R | "
-                f"Total {item['total_r']}R | "
-                f"Closed {item['closed']}\n"
+                f"Винрейт {item['winrate']}% | "
+                f"Средняя {item['expectancy']}R | "
+                f"Итог {item['total_r']}R | "
+                f"Закрыто {item['closed']}\n"
             )
     else:
         text += "Нет данных.\n"
@@ -560,10 +626,10 @@ async def _send_symbol_stats(message: Message, dispatcher: Dispatcher):
         for item in losing:
             text += (
                 f"<b>{item['symbol']}</b> | "
-                f"WR {item['winrate']}% | "
-                f"Exp {item['expectancy']}R | "
-                f"Total {item['total_r']}R | "
-                f"Closed {item['closed']}\n"
+                f"Винрейт {item['winrate']}% | "
+                f"Средняя {item['expectancy']}R | "
+                f"Итог {item['total_r']}R | "
+                f"Закрыто {item['closed']}\n"
             )
     else:
         text += "Нет данных.\n"
@@ -585,13 +651,13 @@ async def _send_side_stats(message: Message, dispatcher: Dispatcher):
     def side_block(title: str, item: dict) -> str:
         return (
             f"{title}\n"
-            f"Signals: <b>{item.get('total', 0)}</b>\n"
-            f"Closed: <b>{item.get('closed', 0)}</b>\n"
-            f"Winrate: <b>{item.get('winrate', 0)}%</b>\n"
-            f"Stop-rate: <b>{item.get('stop_rate', 0)}%</b>\n"
-            f"Expectancy: <b>{item.get('expectancy', 0)}R</b>\n"
-            f"Total R: <b>{item.get('total_r', 0)}R</b>\n"
-            f"Max DD: <b>{item.get('max_drawdown', 0)}R</b>\n"
+            f"Сигналов: <b>{item.get('total', 0)}</b>\n"
+            f"Закрыто: <b>{item.get('closed', 0)}</b>\n"
+            f"Винрейт: <b>{item.get('winrate', 0)}%</b>\n"
+            f"Стоп-рейт: <b>{item.get('stop_rate', 0)}%</b>\n"
+            f"Средняя сделка: <b>{item.get('expectancy', 0)}R</b>\n"
+            f"Итог: <b>{item.get('total_r', 0)}R</b>\n"
+            f"Просадка: <b>{item.get('max_drawdown', 0)}R</b>\n"
         )
 
     long_exp = float(long_stats.get("expectancy") or 0.0)
@@ -604,7 +670,7 @@ async def _send_side_stats(message: Message, dispatcher: Dispatcher):
     elif short_exp < long_exp:
         verdict = "Хуже сейчас: <b>SHORT</b>"
     else:
-        verdict = "LONG и SHORT сейчас примерно равны по expectancy."
+        verdict = "LONG и SHORT сейчас примерно равны по средней сделке."
 
     await send_dashboard(
         message,
@@ -613,7 +679,7 @@ async def _send_side_stats(message: Message, dispatcher: Dispatcher):
         f"{side_block('🔴 <b>SHORT</b>', short_stats)}\n"
         f"📌 {verdict}\n\n"
         "Фильтр слабой стороны: "
-        f"<b>{'ON' if Config.SIDE_QUALITY_FILTER_ENABLED else 'OFF'}</b>",
+        f"<b>{'включен' if Config.SIDE_QUALITY_FILTER_ENABLED else 'выключен'}</b>",
         reply_markup=get_stats_menu(),
     )
 
@@ -625,13 +691,13 @@ async def _send_equity(message: Message, dispatcher: Dispatcher):
     if not rows:
         await send_dashboard(
             message,
-            "📉 <b>Equity Curve</b>\n\n"
+            "📉 <b>Кривая доходности</b>\n\n"
             "Пока нет закрытых сделок.",
             reply_markup=get_stats_menu(),
         )
         return
 
-    text = "📉 <b>Equity Curve</b>\n\n"
+    text = "📉 <b>Кривая доходности</b>\n\n"
     text += f"Текущий итог: <b>{rows[-1]['equity_r']}R</b>\n\n"
 
     for item in rows[-12:]:
@@ -640,7 +706,7 @@ async def _send_equity(message: Message, dispatcher: Dispatcher):
             f"{item['closed_at'][:10]} | "
             f"<b>{item['symbol']}</b> | "
             f"{sign}{item['result_r']}R | "
-            f"Eq {item['equity_r']}R\n"
+            f"Итог {item['equity_r']}R\n"
         )
 
     await send_dashboard(
@@ -664,22 +730,22 @@ async def _send_symbols(message: Message, dispatcher: Dispatcher):
             await send_dashboard(
                 message,
                 "🪙 <b>Монеты</b>\n\n"
-                "Авто-WhiteList ещё не сформирован: нужно больше закрытых сделок по символам.",
+                "Список монет ещё не сформирован: нужно больше закрытых сделок по символам.",
                 reply_markup=get_main_menu(),
             )
             return
 
         whitelist = best
 
-    text = "🪙 <b>Авто-WhiteList</b>\n\n"
+    text = "🪙 <b>Список монет</b>\n\n"
 
     for index, item in enumerate(whitelist[: Config.AUTO_WHITELIST_SIZE], start=1):
         text += (
             f"{index}. <b>{item['symbol']}</b> | "
-            f"Exp {item['expectancy']}R | "
-            f"WR {item['winrate']}% | "
-            f"Total {item['total_r']}R | "
-            f"Closed {item.get('closed_count', item.get('closed', 0))}\n"
+            f"Средняя {item['expectancy']}R | "
+            f"Винрейт {item['winrate']}% | "
+            f"Итог {item['total_r']}R | "
+            f"Закрыто {item.get('closed_count', item.get('closed', 0))}\n"
         )
 
     await send_dashboard(
@@ -719,8 +785,8 @@ async def _send_open_orders(message: Message, dispatcher: Dispatcher):
             f"<b>{order.get('symbol', '-')}</b> | "
             f"{order.get('side', '-')} | "
             f"{order.get('type', order.get('orderType', '-'))}\n"
-            f"Price: <b>{fmt_price(order.get('price') or order.get('stopPrice') or order.get('triggerPrice'))}</b> | "
-            f"Qty: <b>{order.get('origQty', order.get('quantity', '-'))}</b>\n\n"
+            f"Цена: <b>{fmt_price(order.get('price') or order.get('stopPrice') or order.get('triggerPrice'))}</b> | "
+            f"Количество: <b>{order.get('origQty', order.get('quantity', '-'))}</b>\n\n"
         )
 
     await send_dashboard(
@@ -747,8 +813,8 @@ async def _send_version(message: Message):
         message,
         "🏷 <b>Версия</b>\n\n"
         f"Crypto Signal Bot Pro: <b>{Config.APP_VERSION}</b>\n"
-        f"Mode: <b>{Config.STRATEGY_MODE}</b>\n"
-        f"Auto WhiteList: <b>{'ON' if Config.AUTO_WHITELIST_ENABLED else 'OFF'}</b>",
+        f"Режим: <b>{Config.STRATEGY_MODE}</b>\n"
+        f"Автосписок монет: <b>{'включен' if Config.AUTO_WHITELIST_ENABLED else 'выключен'}</b>",
         reply_markup=get_admin_menu(),
     )
 
@@ -759,7 +825,7 @@ async def _refresh_whitelist(message: Message, dispatcher: Dispatcher):
 
     await send_dashboard(
         message,
-        "🔄 <b>WhiteList обновлён</b>\n\n"
+        "🔄 <b>Список монет обновлён</b>\n\n"
         f"Символов: <b>{len(rows)}</b>",
         reply_markup=get_admin_menu(),
     )
@@ -817,8 +883,8 @@ async def _restart_bot(message: Message):
 async def start_handler(message: Message):
     await send_dashboard(
         message,
-        "👇 <b>Главное меню</b>\n\n"
-        "Выбери действие:",
+        "📊 <b>Панель управления</b>\n\n"
+        "Выбери раздел.",
         reply_markup=get_main_menu(),
     )
 
@@ -835,7 +901,7 @@ async def health_handler(message: Message, dispatcher: Dispatcher):
 
 @router.message(Command("stats"))
 async def stats_handler(message: Message, dispatcher: Dispatcher):
-    await _send_signal_stats(message, dispatcher)
+    await _send_summary(message, dispatcher)
 
 
 @router.message(Command("stats_symbols"))
@@ -917,8 +983,28 @@ async def restart_handler(message: Message):
 # BUTTONS
 # =====================
 
-@router.message(lambda m: m.text in {"📊 Статус", "🟢 Health", "🟢 Система"})
+@router.message(lambda m: m.text in {"📊 Статус", "🟢 Система"})
 async def btn_status(message: Message, dispatcher: Dispatcher):
+    await _send_status(message, dispatcher)
+
+
+@router.message(lambda m: m.text == "📊 Сводка")
+async def btn_summary(message: Message, dispatcher: Dispatcher):
+    await _send_summary(message, dispatcher)
+
+
+@router.message(lambda m: m.text == "💵 Финансы")
+async def btn_finances(message: Message, dispatcher: Dispatcher):
+    await _send_finances(message, dispatcher)
+
+
+@router.message(lambda m: m.text == "🛡 Риск")
+async def btn_risk(message: Message, dispatcher: Dispatcher):
+    await _send_risk(message, dispatcher)
+
+
+@router.message(lambda m: m.text == "⚙️ Система")
+async def btn_system(message: Message, dispatcher: Dispatcher):
     await _send_status(message, dispatcher)
 
 
@@ -927,14 +1013,14 @@ async def btn_stats_menu(message: Message):
     await send_dashboard(
         message,
         "📈 <b>Статистика</b>\n\n"
-        "Выбери раздел:",
+        "Выбери раздел.",
         reply_markup=get_stats_menu(),
     )
 
 
 @router.message(lambda m: m.text == "📊 Общая статистика")
 async def btn_stats(message: Message, dispatcher: Dispatcher):
-    await _send_signal_stats(message, dispatcher)
+    await _send_summary(message, dispatcher)
 
 
 @router.message(lambda m: m.text == "🪙 Статистика монет")
@@ -947,7 +1033,7 @@ async def btn_stats_sides(message: Message, dispatcher: Dispatcher):
     await _send_side_stats(message, dispatcher)
 
 
-@router.message(lambda m: m.text == "📉 Equity Curve")
+@router.message(lambda m: m.text == "📉 Кривая доходности")
 async def btn_equity(message: Message, dispatcher: Dispatcher):
     await _send_equity(message, dispatcher)
 
@@ -966,13 +1052,13 @@ async def btn_symbols(message: Message, dispatcher: Dispatcher):
 async def btn_trades(message: Message):
     await send_dashboard(
         message,
-        "💼 <b>Раздел сделок</b>\n\n"
-        "Выбери, что показать:",
+        "📈 <b>Сделки</b>\n\n"
+        "Выбери раздел.",
         reply_markup=get_trades_menu(),
     )
 
 
-@router.message(lambda m: m.text == "📂 Открытые")
+@router.message(lambda m: m.text in {"📂 Открытые", "📈 Позиции"})
 async def btn_open(message: Message, dispatcher: Dispatcher):
     await _send_open_trades(message, dispatcher)
 
@@ -982,7 +1068,7 @@ async def btn_orders(message: Message, dispatcher: Dispatcher):
     await _send_open_orders(message, dispatcher)
 
 
-@router.message(lambda m: m.text == "📜 История")
+@router.message(lambda m: m.text in {"📜 История", "📜 Журнал"})
 async def btn_history(message: Message, dispatcher: Dispatcher):
     await _send_history(message, dispatcher)
 
@@ -1015,7 +1101,7 @@ async def btn_admin_menu(message: Message):
     await send_dashboard(
         message,
         "⚙️ <b>Админ</b>\n\n"
-        "Выбери действие:",
+        "Выбери действие.",
         reply_markup=get_admin_menu(),
     )
 
@@ -1025,7 +1111,7 @@ async def btn_version(message: Message):
     await _send_version(message)
 
 
-@router.message(lambda m: m.text == "🔄 Обновить WhiteList")
+@router.message(lambda m: m.text == "🔄 Обновить список монет")
 async def btn_refresh_whitelist(message: Message, dispatcher: Dispatcher):
     if not await guard_admin(message):
         return
@@ -1033,12 +1119,12 @@ async def btn_refresh_whitelist(message: Message, dispatcher: Dispatcher):
     await _refresh_whitelist(message, dispatcher)
 
 
-@router.message(lambda m: m.text in {"♻️ Reset Stats", "♻️ Сброс статистики"})
+@router.message(lambda m: m.text == "♻️ Сброс статистики")
 async def btn_reset_stats(message: Message, dispatcher: Dispatcher):
     await _reset_stats(message, dispatcher)
 
 
-@router.message(lambda m: m.text in {"🧹 Reset DB", "🧹 Сброс базы"})
+@router.message(lambda m: m.text == "🧹 Сброс базы")
 async def btn_reset_db_prompt(message: Message):
     if not await guard_admin(message):
         return
@@ -1051,12 +1137,12 @@ async def btn_reset_db_prompt(message: Message):
     )
 
 
-@router.message(lambda m: m.text in {"✅ Подтвердить Reset DB", "✅ Подтвердить сброс базы"})
+@router.message(lambda m: m.text == "✅ Подтвердить сброс базы")
 async def btn_reset_db_confirm(message: Message, dispatcher: Dispatcher):
     await _reset_db(message, dispatcher)
 
 
-@router.message(lambda m: m.text in {"🔁 Restart", "🔁 Перезапуск"})
+@router.message(lambda m: m.text == "🔁 Перезапуск")
 async def btn_restart(message: Message):
     await _restart_bot(message)
 
@@ -1065,8 +1151,8 @@ async def btn_restart(message: Message):
 async def btn_back(message: Message):
     await send_dashboard(
         message,
-        "👇 <b>Главное меню</b>\n\n"
-        "Выбери действие:",
+        "📊 <b>Панель управления</b>\n\n"
+        "Выбери раздел.",
         reply_markup=get_main_menu(),
     )
 
