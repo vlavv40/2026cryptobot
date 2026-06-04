@@ -179,41 +179,36 @@ async def _send_signal_stats(message: Message, dispatcher: Dispatcher):
     period = stats_period_label()
     clean_stop = int(stats.get("clean_stop_hit") or 0)
     protected_stop = int(stats.get("protected_stop_hit") or 0)
-    tp1_then_stop = int(stats.get("tp1_then_stop") or 0)
-    tp2_then_stop = int(stats.get("tp2_then_stop") or 0)
+    wins = int(stats.get("wins") or 0)
+    losses = int(stats.get("losses") or 0)
+    closed = int(stats.get("closed") or 0)
+    open_count = int(stats.get("open") or 0)
+    protected_now = int(paper_stats.get("protected_trades", 0) or 0)
+
+    if float(stats.get("expectancy") or 0.0) > 0:
+        conclusion = "бот сейчас торгует в плюс."
+    elif closed < 10:
+        conclusion = "сделок ещё мало, вывод рано делать."
+    else:
+        conclusion = "математика слабая, нужно снижать риск или править фильтры."
 
     await send_dashboard(
         message,
         f"📈 <b>Статистика {period}</b>\n\n"
-        "✅ <b>Итог</b>\n"
-        f"Paper PnL: <b>{fmt_money(paper_stats.get('pnl_usdt'))}</b>\n"
-        f"Signal Result: <b>{stats['total_r']}R</b>\n"
-        f"Expectancy: <b>{stats['expectancy']}R / сделка</b>\n"
-        f"Winrate: <b>{stats['winrate']}%</b>\n"
-        f"Profit Factor: <b>{stats['profit_factor']}</b>\n\n"
+        f"🧠 <b>Главное:</b> {conclusion}\n\n"
+        "💰 <b>Деньги</b>\n"
+        f"PnL: <b>{fmt_money(paper_stats.get('pnl_usdt'))}</b>\n"
+        f"Результат: <b>{stats['total_r']}R</b>\n"
+        f"Средняя сделка: <b>{stats['expectancy']}R</b>\n\n"
         "📌 <b>Сделки</b>\n"
-        f"Всего сигналов: <b>{stats['total']}</b>\n"
-        f"Открыто сейчас: <b>{stats['open']}</b>\n"
-        f"Закрыто: <b>{stats['closed']}</b>\n"
-        f"Защищено сейчас: <b>{paper_stats.get('protected_trades', 0)}</b>\n"
-        f"Открытый риск: <b>{fmt_money(paper_stats.get('open_risk_usdt'))}</b>\n"
-        f"Открытый объём: <b>{fmt_money(paper_stats.get('open_volume_usdt'))}</b>\n\n"
-        "🎯 <b>Выходы</b>\n"
-        f"Дошли до TP1: <b>{stats['tp1_hit']}</b>\n"
-        f"Дошли до TP2: <b>{stats['tp2_hit']}</b>\n"
-        f"Дошли до TP3: <b>{stats['tp3_hit']}</b>\n"
-        f"Чистый стоп без TP: <b>{clean_stop}</b>\n"
-        f"Защитный стоп после TP: <b>{protected_stop}</b>\n"
-        f"  после TP1: <b>{tp1_then_stop}</b>\n"
-        f"  после TP2: <b>{tp2_then_stop}</b>\n\n"
-        "📊 <b>Качество</b>\n"
-        f"Avg Win: <b>{stats['avg_win']}R</b>\n"
-        f"Avg Loss: <b>{stats['avg_loss']}R</b>\n"
-        f"Max Drawdown: <b>{stats['max_drawdown']}R</b>\n"
-        f"Avg Hold: <b>{fmt_minutes(stats['avg_hold_minutes'])}</b>\n\n"
-        "ℹ️ <b>Важно</b>\n"
-        "STOP в старом отчёте включал и защитные стопы после переноса. "
-        "Теперь полный минус виден отдельно как «чистый стоп без TP».",
+        f"Закрыто: <b>{closed}</b> | плюс: <b>{wins}</b> | минус: <b>{losses}</b>\n"
+        f"Полный стоп: <b>{clean_stop}</b>\n"
+        f"Стоп после прибыли: <b>{protected_stop}</b>\n\n"
+        "🟡 <b>Сейчас</b>\n"
+        f"Открыто: <b>{open_count}</b> | защищено: <b>{protected_now}</b>\n"
+        f"Риск в рынке: <b>{fmt_money(paper_stats.get('open_risk_usdt'))}</b>\n\n"
+        "Полный стоп = сделка сразу ушла в минус. "
+        "Стоп после прибыли = сделка уже брала TP.",
         reply_markup=get_stats_menu(),
     )
 
